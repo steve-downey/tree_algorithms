@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-set(ALL_EXAMPLES todo)
+set(ALL_EXAMPLES
+    todo
+    fixpoint_tree_example
+    expression_algorithms
+    binary_tree_adapt
+)
 message("Examples to be built: ${ALL_EXAMPLES}")
 
 foreach(example ${ALL_EXAMPLES})
     add_executable(beman.tree_algorithms.examples.${example})
-    target_sources(beman.tree_algorithms.examples.${example} PRIVATE ${example}.cpp)
+    target_sources(
+        beman.tree_algorithms.examples.${example}
+        PRIVATE ${example}.cpp
+    )
     target_link_libraries(
         beman.tree_algorithms.examples.${example}
         PRIVATE beman::tree_algorithms
