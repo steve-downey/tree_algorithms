@@ -4,7 +4,7 @@ Accumulated from sub-agent reports; resolve or explicitly waive before R0.
 
 ## Blocking / needs Steve
 
-- GitHub repo not yet created: `gh repo create steve-downey/tree_algorithms --public` was blocked by the session permission classifier; create it and push, then verify CI.
+- ~~GitHub repo not yet created~~ DONE 2026-07-05: repo created by Steve, main pushed, origin tracking set.
 - Request a real WG21 paper number to replace the `DnnnnR0` placeholder.
 - Decide whether to upstream copier-template fixes to `steve-downey/exemplar` (items below marked *template*).
 
