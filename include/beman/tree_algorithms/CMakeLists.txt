@@ -10,8 +10,10 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
                     box.hpp
                     config.hpp
                     fix.hpp
+                    functor.hpp
                     overloaded.hpp
                     recursion_schemes.hpp
+                    recursion_schemes_lookup.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"
@@ -25,8 +27,10 @@ else()
                     box.hpp
                     config.hpp
                     fix.hpp
+                    functor.hpp
                     overloaded.hpp
                     recursion_schemes.hpp
+                    recursion_schemes_lookup.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"

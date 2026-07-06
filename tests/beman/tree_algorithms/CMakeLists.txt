@@ -73,9 +73,40 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
     )
 endif()
 
+add_executable(beman.tree_algorithms.tests.functor)
+target_sources(beman.tree_algorithms.tests.functor PRIVATE functor.test.cpp)
+target_link_libraries(
+    beman.tree_algorithms.tests.functor
+    PRIVATE beman::tree_algorithms Catch2::Catch2WithMain
+)
+if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
+    set_target_properties(
+        beman.tree_algorithms.tests.functor
+        PROPERTIES CXX_MODULE_STD ON
+    )
+endif()
+
+add_executable(beman.tree_algorithms.tests.recursion_schemes_lookup)
+target_sources(
+    beman.tree_algorithms.tests.recursion_schemes_lookup
+    PRIVATE recursion_schemes_lookup.test.cpp
+)
+target_link_libraries(
+    beman.tree_algorithms.tests.recursion_schemes_lookup
+    PRIVATE beman::tree_algorithms Catch2::Catch2WithMain
+)
+if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
+    set_target_properties(
+        beman.tree_algorithms.tests.recursion_schemes_lookup
+        PROPERTIES CXX_MODULE_STD ON
+    )
+endif()
+
 include(Catch)
 catch_discover_tests(beman.tree_algorithms.tests.todo)
 catch_discover_tests(beman.tree_algorithms.tests.box)
 catch_discover_tests(beman.tree_algorithms.tests.fix)
 catch_discover_tests(beman.tree_algorithms.tests.overloaded)
 catch_discover_tests(beman.tree_algorithms.tests.recursion_schemes)
+catch_discover_tests(beman.tree_algorithms.tests.functor)
+catch_discover_tests(beman.tree_algorithms.tests.recursion_schemes_lookup)
