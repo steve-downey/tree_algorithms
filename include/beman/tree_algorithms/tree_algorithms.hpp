@@ -11,6 +11,9 @@ import beman.tree_algorithms;
 
 #else
 
+    #include <beman/tree_algorithms/box.hpp>
+    #include <beman/tree_algorithms/fix.hpp>
+    #include <beman/tree_algorithms/overloaded.hpp>
     #include <beman/tree_algorithms/todo.hpp>
 
 #endif // BEMAN_TREE_ALGORITHMS_USE_MODULES() &&

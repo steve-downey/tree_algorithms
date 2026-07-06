@@ -7,7 +7,10 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
             FILE_SET CXX_MODULES FILES tree_algorithms.cppm
             FILE_SET HEADERS
                 FILES
+                    box.hpp
                     config.hpp
+                    fix.hpp
+                    overloaded.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"
@@ -18,7 +21,10 @@ else()
         PUBLIC
             FILE_SET HEADERS
                 FILES
+                    box.hpp
                     config.hpp
+                    fix.hpp
+                    overloaded.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"
