@@ -34,6 +34,10 @@ jobs:
           {"preset": "msvc-release", "runner": "windows-latest"}
         ]
 
+  # Toolchain floor: the library is C++23 and requires deducing-this
+  # ("this auto&&" explicit object parameters), so the minimum supported
+  # compilers are gcc-14 and clang-18. C++26 is exercised by the advisory
+  # (allowed-to-fail) job below, not by the required matrix.
   build-and-test:
     uses: bemanproject/infra-workflows/.github/workflows/reusable-beman-build-and-test.yml@1.7.3
     with:
@@ -42,7 +46,7 @@ jobs:
           "gcc": [
             { "versions": ["16"],
               "tests": [
-                { "cxxversions": ["c++26"],
+                { "cxxversions": ["c++23"],
                   "tests": [
                     { "stdlibs": ["libstdc++"],
                       "tests": [
@@ -52,7 +56,11 @@ jobs:
                       ]
                     }
                   ]
-                },
+                }
+              ]
+            },
+            { "versions": ["15"],
+              "tests": [
                 { "cxxversions": ["c++23"],
                   "tests": [
                     { "stdlibs": ["libstdc++"],
@@ -61,39 +69,12 @@ jobs:
                       ]
                     }
                   ]
-                },
-                { "cxxversions": ["c++20", "c++17"],
-                  "tests": [{ "stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
                 }
               ]
             },
-            { "versions": ["15"],
+            { "versions": ["14"],
               "tests": [
-                { "cxxversions": ["c++26", "c++23"],
-                  "tests": [
-                    { "stdlibs": ["libstdc++"],
-                      "tests": [
-                        "Release.Default", "Debug.-DBEMAN_TREE_ALGORITHMS_USE_MODULES=On"
-                      ]
-                    }
-                  ]
-                },
-                { "cxxversions": ["c++20", "c++17"],
-                  "tests": [{ "stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
-                }
-              ]
-            },
-            { "versions": ["14", "13"],
-              "tests": [
-                { "cxxversions": ["c++26", "c++23", "c++20", "c++17"],
-                  "tests": [{ "stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
-                }
-              ]
-            },
-            {
-              "versions": ["12", "11"],
-              "tests": [
-                { "cxxversions": ["c++23", "c++20", "c++17"],
+                { "cxxversions": ["c++23"],
                   "tests": [{ "stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
                 }
               ]
@@ -102,7 +83,7 @@ jobs:
           "clang": [
             { "versions": ["22"],
               "tests": [
-                {"cxxversions": ["c++26"],
+                { "cxxversions": ["c++23"],
                   "tests": [
                     { "stdlibs": ["libstdc++", "libc++"],
                       "tests": [
@@ -112,49 +93,15 @@ jobs:
                       ]
                     }
                   ]
-                },
+                }
+              ]
+            },
+            { "versions": ["21", "20", "19", "18"],
+              "tests": [
                 { "cxxversions": ["c++23"],
                   "tests": [
-                    { "stdlibs": ["libstdc++", "libc++"],
-                      "tests": [
-                        "Release.Default", "Debug.-DBEMAN_TREE_ALGORITHMS_USE_MODULES=On"
-                      ]
-                    }
-                  ]
-                },
-                { "cxxversions": ["c++20", "c++17"],
-                  "tests": [
                     {"stdlibs": ["libstdc++", "libc++"], "tests": ["Release.Default"]}
                   ]
-                }
-              ]
-            },
-            { "versions": ["21", "20", "19"],
-              "tests": [
-                { "cxxversions": ["c++26", "c++23", "c++20", "c++17"],
-                  "tests": [
-                    {"stdlibs": ["libstdc++", "libc++"], "tests": ["Release.Default"]}
-                  ]
-                }
-              ]
-            },
-            { "versions": ["18"],
-              "tests": [
-                { "cxxversions": ["c++26", "c++23", "c++20", "c++17"],
-                  "tests": [{"stdlibs": ["libc++"], "tests": ["Release.Default"]}]
-                },
-                { "cxxversions": ["c++23", "c++20", "c++17"],
-                  "tests": [{"stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
-                }
-              ]
-            },
-            { "versions": ["17"],
-              "tests": [
-                { "cxxversions": ["c++26", "c++23", "c++20", "c++17"],
-                  "tests": [{"stdlibs": ["libc++"], "tests": ["Release.Default"]}]
-                },
-                { "cxxversions": ["c++20", "c++17"],
-                  "tests": [{"stdlibs": ["libstdc++"], "tests": ["Release.Default"]}]
                 }
               ]
             }
@@ -162,7 +109,7 @@ jobs:
           "appleclang": [
             { "versions": ["latest"],
               "tests": [
-                { "cxxversions": ["c++26", "c++23", "c++20", "c++17"],
+                { "cxxversions": ["c++23"],
                   "tests": [{ "stdlibs": ["libc++"], "tests": ["Release.Default"]}]
                 }
               ]
@@ -185,6 +132,26 @@ jobs:
             }
           ]
         }
+
+  # Advisory (allowed-to-fail) forward-compatibility check: build and test
+  # with -std=c++26 on the newest gcc in the matrix. Failures here do not
+  # fail CI.
+  advisory-cpp26:
+    name: "advisory-cpp26 (gcc, C++26, allowed to fail)"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container: ghcr.io/bemanproject/infra-containers-gcc:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Configure (C++26)
+        run: cmake --preset gcc-release -DCMAKE_CXX_STANDARD=26
+      - name: Build
+        run: cmake --build --preset gcc-release
+      - name: Test
+        run: ctest --preset gcc-release
 
   vcpkg-ci:
     uses: bemanproject/infra-workflows/.github/workflows/reusable-beman-vcpkg-ci.yml@1.7.3

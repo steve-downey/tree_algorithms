@@ -43,17 +43,16 @@ You can disable building tests by setting CMake option `BEMAN_TREE_ALGORITHMS_BU
 
 ### Supported Platforms
 
+The library requires C++23 with deducing-this (explicit object parameters), so the toolchain floor is GCC 14 and Clang 18.
+
 | Compiler   | Version | C++ Standards | Standard Library  |
 |------------|---------|---------------|-------------------|
-| GCC        | 16-13   | C++26-C++17   | libstdc++         |
-| GCC        | 12-11   | C++23-C++17   | libstdc++         |
-| Clang      | 22-19   | C++26-C++17   | libstdc++, libc++ |
-| Clang      | 18      | C++26-C++17   | libc++            |
-| Clang      | 18      | C++23-C++17   | libstdc++         |
-| Clang      | 17      | C++26-C++17   | libc++            |
-| Clang      | 17      | C++20, C++17  | libstdc++         |
-| AppleClang | latest  | C++26-C++17   | libc++            |
+| GCC        | 16-14   | C++23         | libstdc++         |
+| Clang      | 22-18   | C++23         | libstdc++, libc++ |
+| AppleClang | latest  | C++23         | libc++            |
 | MSVC       | latest  | C++23         | MSVC STL          |
+
+C++26 is additionally exercised by an advisory (allowed-to-fail) CI job on the newest GCC.
 
 ## Development
 
