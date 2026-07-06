@@ -27,6 +27,11 @@ Accumulated from sub-agent reports; resolve or explicitly waive before R0.
 - Verify P2688/P1371 pattern-matching status against the current WG21 paper trail before publication (text hedged "as of this writing").
 - All `# MEASURE:` / `<!-- MEASURE -->` flags in `docs/notes/engineering-reality-sections.md`: re-measure compile-time and codegen claims against beman.tree_algorithms before quoting numbers.
 
+## From Task 4.2 (D-paper)
+
+- Verify the `std::indirect` paper number cited in References (P3019) before publication.
+- Replace `DnnnnR0` once a real number is assigned; synopsis code block carries a SYNOPSIS-TRANSCLUDE-TODO for Task 4.4.
+
 ## Deferred by design
 
 - Foldable/Traversable article material (source lines 572-796) earmarked for a follow-up article; not in the minimal core.
