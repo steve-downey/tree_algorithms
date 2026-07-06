@@ -14,6 +14,7 @@ Accumulated from sub-agent reports; resolve or explicitly waive before R0.
 - `vcpkg-configuration.json` references `bemanproject/vcpkg-registry` port `beman-tree-algorithms`, which does not exist; the `vcpkg-ci` job will likely fail on the fork. Disable or point elsewhere.
 - Issue/PR templates link to `bemanproject/beman` docs — cosmetic.
 - `cmake/llvm-toolchain.cmake` and `cmake/ci-clang-toolchain.cmake` hard-code `-std=c++20`, below the library floor; bump to c++23. *template*
+- CONFIRMED BLOCKING (Task 3c, partial run): `cmake/clang-flags.cmake` pins `-std=gnu++20`, so `make TOOLCHAIN=clang-22 test` fails on deducing-this in functor.hpp. Bump to gnu++23/c++23 before any clang toolchain build. *template*
 - README line ~39 says "(Test Only) GoogleTest" — stale for a catch2 project; fix text (and check the template's catch2 branch). *template*
 - Required matrix now C++23-only (c++17/20 impossible with deducing-this; c++26 covered solely by the advisory job). Flag if C++26 should be required instead.
 
