@@ -7,10 +7,13 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
             FILE_SET CXX_MODULES FILES tree_algorithms.cppm
             FILE_SET HEADERS
                 FILES
+                    binary_tree.hpp
                     box.hpp
                     config.hpp
+                    expression.hpp
                     fix.hpp
                     functor.hpp
+                    functors.hpp
                     overloaded.hpp
                     recursion_schemes.hpp
                     recursion_schemes_lookup.hpp
@@ -24,10 +27,13 @@ else()
         PUBLIC
             FILE_SET HEADERS
                 FILES
+                    binary_tree.hpp
                     box.hpp
                     config.hpp
+                    expression.hpp
                     fix.hpp
                     functor.hpp
+                    functors.hpp
                     overloaded.hpp
                     recursion_schemes.hpp
                     recursion_schemes_lookup.hpp

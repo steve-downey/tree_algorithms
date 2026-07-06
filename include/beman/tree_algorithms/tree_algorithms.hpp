@@ -11,9 +11,12 @@ import beman.tree_algorithms;
 
 #else
 
+    #include <beman/tree_algorithms/binary_tree.hpp>
     #include <beman/tree_algorithms/box.hpp>
+    #include <beman/tree_algorithms/expression.hpp>
     #include <beman/tree_algorithms/fix.hpp>
     #include <beman/tree_algorithms/functor.hpp>
+    #include <beman/tree_algorithms/functors.hpp>
     #include <beman/tree_algorithms/overloaded.hpp>
     #include <beman/tree_algorithms/recursion_schemes.hpp>
     #include <beman/tree_algorithms/recursion_schemes_lookup.hpp>
