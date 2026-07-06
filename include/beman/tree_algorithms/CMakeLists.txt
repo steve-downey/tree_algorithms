@@ -11,6 +11,7 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
                     config.hpp
                     fix.hpp
                     overloaded.hpp
+                    recursion_schemes.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"
@@ -25,6 +26,7 @@ else()
                     config.hpp
                     fix.hpp
                     overloaded.hpp
+                    recursion_schemes.hpp
                     tree_algorithms.hpp
                     todo.hpp
                     "${PROJECT_BINARY_DIR}/include/beman/tree_algorithms/config_generated.hpp"
