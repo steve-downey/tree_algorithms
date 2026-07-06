@@ -2,9 +2,6 @@
   "name": "beman-tree-algorithms",
   "version-semver": "0.1.0",
   "dependencies": [
-    {
-      "name": "catch2",
-      "host": true
-    }
+    "catch2"
   ]
 }

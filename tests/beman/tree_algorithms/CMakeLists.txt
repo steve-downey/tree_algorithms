@@ -147,6 +147,11 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
     )
 endif()
 
+# The fetch-content dependency provider makes Catch2 available inside a
+# function scope, so its extras/ directory never reaches CMAKE_MODULE_PATH.
+if(catch2_SOURCE_DIR)
+    list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
+endif()
 include(Catch)
 catch_discover_tests(beman.tree_algorithms.tests.todo)
 catch_discover_tests(beman.tree_algorithms.tests.box)
