@@ -61,8 +61,10 @@ struct Functor : protected Impl {
  * participating type; the unspecialized default is std::false_type so a
  * missing instance is detectable.
  */
+// 5cdef435-de62-4973-91f4-a56dbef659f3
 template <class T>
 inline constexpr auto functor_typeclass = std::false_type{};
+// 5cdef435-de62-4973-91f4-a56dbef659f3 end
 
 /** True when functor_typeclass<T> has been specialized away from its
  * std::false_type default, i.e. T has a Functor instance.

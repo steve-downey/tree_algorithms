@@ -31,56 +31,13 @@ I want to build expression trees, evaluate them, and do it without inheritance o
 One utility first: ~Box<A>~, a small owning pointer with deep-copy value semantics.
 It exists to break a cycle in the type system, described below; nothing about it is tree-specific.
 
-# TRANSCLUDE-TODO: examples/fixpoint_tree_example.cpp compact Box + make_box region (self-contained example variant, copy-and-swap; the library header ships the full version)
-#+begin_src C++
-#include <utility>
-#include <variant>
-
-template <typename A>
-struct Box {
-    A* ptr = nullptr;
-
-    constexpr Box() = default;
-    constexpr explicit Box(A* p) : ptr(p) {}
-    constexpr Box(const Box& other)
-        : ptr(other.ptr ? new A(*other.ptr) : nullptr) {}
-    constexpr Box(Box&& other) noexcept
-        : ptr(std::exchange(other.ptr, nullptr)) {}
-    constexpr auto operator=(Box other) noexcept -> Box& {
-        std::swap(ptr, other.ptr);
-        return *this;
-    }
-    constexpr ~Box() { delete ptr; }
-
-    constexpr auto operator*() const -> A& { return *ptr; }
-    constexpr auto operator->() const -> A* { return ptr; }
-};
-
-template <typename A, typename... Args>
-constexpr auto make_box(Args&&... args) -> Box<A> {
-    return Box<A>(new A(std::forward<Args>(args)...));
-}
-#+end_src
+#+transclude: [[file:../examples/fixpoint_tree_example.cpp::ec8e7f28-10c3-43ea-bfa9-a54f4c63ef9c]]  :lines 2- :src cpp :end "ec8e7f28-10c3-43ea-bfa9-a54f4c63ef9c end"
 
 Now, here is the entire type system for an expression tree.
 The full self-contained example is in [[orgit-file:examples/fixpoint_tree_example.cpp][=examples/fixpoint_tree_example.cpp=]].
 [[https://godbolt.org][Paste it into Compiler Explorer]] --- it compiles with any C++23 toolchain.
 
-# TRANSCLUDE-TODO: examples/fixpoint_tree_example.cpp expression type system region (Const/Add/Mul, ExprF, Fix, overloaded)
-#+begin_src C++
-template <typename A> struct Const { int val; };
-template <typename A> struct Add   { Box<A> left, right; };
-template <typename A> struct Mul   { Box<A> left, right; };
-
-template <typename A>
-using ExprF = std::variant<Const<A>, Add<A>, Mul<A>>;
-
-template <template <typename> class F>
-struct Fix { F<Fix<F>> inner; };
-
-template <class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
-template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
-#+end_src
+#+transclude: [[file:../examples/fixpoint_tree_example.cpp::3959d7ab-f1fa-4fd7-b2b9-886a1f7610a2]]  :lines 2- :src cpp :end "3959d7ab-f1fa-4fd7-b2b9-886a1f7610a2 end"
 
 That is it.
 A ~Fix<ExprF>~ value /is/ a tree node, and every node is a [[https://en.cppreference.com/w/cpp/utility/variant][=std::variant=]] of constant, addition, or multiplication.
@@ -88,40 +45,11 @@ No CRTP, no base classes.
 
 A handful of helpers let me build and evaluate trees:
 
-# TRANSCLUDE-TODO: examples/fixpoint_tree_example.cpp smart-constructor helpers region (const_node/add_node/mul_node)
-#+begin_src C++
-using ExprTree = Fix<ExprF>;
+#+transclude: [[file:../examples/fixpoint_tree_example.cpp::02640f07-f080-4eec-bd90-b414fabd4b7b]]  :lines 2- :src cpp :end "02640f07-f080-4eec-bd90-b414fabd4b7b end"
 
-ExprTree const_node(int v) { return Fix<ExprF>{Const<ExprTree>{v}}; }
+Build ~(1 + 2) * 3~ and evaluate it:
 
-ExprTree add_node(ExprTree l, ExprTree r) {
-    return Fix<ExprF>{Add<ExprTree>{make_box<ExprTree>(std::move(l)),
-                                    make_box<ExprTree>(std::move(r))}};
-}
-
-ExprTree mul_node(ExprTree l, ExprTree r) {
-    return Fix<ExprF>{Mul<ExprTree>{make_box<ExprTree>(std::move(l)),
-                                    make_box<ExprTree>(std::move(r))}};
-}
-#+end_src
-
-Build ~(2 * 3) + 4~ and evaluate it:
-
-# TRANSCLUDE-TODO: examples/fixpoint_tree_example.cpp main/usage region (build tree, one-layer eval visitor)
-#+begin_src C++
-int main() {
-    ExprTree tree =
-        add_node(mul_node(const_node(2), const_node(3)), const_node(4));
-
-    auto eval = overloaded{
-        [](const Const<int>& c) { return c.val; },
-        [](const Add<int>&   a) { return *a.left + *a.right; },
-        [](const Mul<int>&   m) { return *m.left * *m.right; },
-    };
-
-    // ... but how does eval get applied recursively?
-}
-#+end_src
+#+transclude: [[file:../examples/fixpoint_tree_example.cpp::2526ec45-2e52-4b56-aab0-1034b078a459]]  :lines 2- :src cpp :end "2526ec45-2e52-4b56-aab0-1034b078a459 end"
 
 That ~eval~ object handles one layer.
 Constants return their value.
@@ -129,7 +57,8 @@ Additions add children that are already integers.
 Multiplications multiply children that are already integers.
 It does not recurse.
 
-The recursion is supplied separately, by a function called ~fold_fix~.
+The snippet above supplies the recursion locally, with a hand-rolled ~fold_eval~ that walks the tree and calls ~eval~ at each layer.
+The library generalizes exactly that pattern into a function called ~fold_fix~.
 First, the pieces.
 
 * The Pieces
@@ -147,26 +76,7 @@ This is the F-algebra pattern: separate the recursive structure from the shape o
 
 From [[orgit-file:include/beman/tree_algorithms/expression.hpp][=include/beman/tree_algorithms/expression.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/expression.hpp ExprF base functor region (Const/Add/Mul, ExprF alias)
-#+begin_src C++
-template <typename A>
-struct Const {
-    int val;
-};
-
-template <typename A>
-struct Add {
-    Box<A> left, right;
-};
-
-template <typename A>
-struct Mul {
-    Box<A> left, right;
-};
-
-template <typename A>
-using ExprF = std::variant<Const<A>, Add<A>, Mul<A>>;
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/expression.hpp::085bb189-a48e-4262-aefd-b64f8755e959]]  :lines 2- :src cpp :end "085bb189-a48e-4262-aefd-b64f8755e959 end"
 
 When ~A~ is ~int~, an ~ExprF<int>~ is one layer where children are already numbers.
 When ~A~ is the full tree type, children are subtrees.
@@ -182,57 +92,9 @@ A ~variant~ cannot directly contain itself.
 The library ships a hand-rolled ~Box~, not [[https://en.cppreference.com/w/cpp/memory/indirect][=std::indirect=]].
 From [[orgit-file:include/beman/tree_algorithms/box.hpp][=include/beman/tree_algorithms/box.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/box.hpp Box class (full library version, ported from fixpoint box.hpp anchor a1f81cb9-ebb3-4872-9549-03ca140c61b2)
-#+begin_src C++
-template <typename A>
-struct Box {
-    A* ptr = nullptr;
+#+transclude: [[file:../include/beman/tree_algorithms/box.hpp::a1f81cb9-ebb3-4872-9549-03ca140c61b2]]  :lines 2- :src cpp :end "a1f81cb9-ebb3-4872-9549-03ca140c61b2 end"
 
-    constexpr Box() = default;
-
-    constexpr explicit Box(A* p) : ptr(p) {}
-
-    constexpr Box(Box const& other)
-        : ptr(other.ptr ? new A(*other.ptr) : nullptr) {}
-
-    constexpr auto operator=(Box const& other) -> Box& {
-        if (this != &other) {
-            delete ptr;
-            ptr = other.ptr ? new A(*other.ptr) : nullptr;
-        }
-        return *this;
-    }
-
-    constexpr Box(Box&& other) noexcept
-        : ptr(std::exchange(other.ptr, nullptr)) {}
-
-    constexpr auto operator=(Box&& other) noexcept -> Box& {
-        if (this != &other) {
-            delete ptr;
-            ptr = std::exchange(other.ptr, nullptr);
-        }
-        return *this;
-    }
-
-    constexpr ~Box() { delete ptr; }
-
-    constexpr auto operator*() const -> A& { return *ptr; }
-    constexpr auto operator->() const -> A* { return ptr; }
-
-    friend constexpr auto operator==(Box const& lhs, Box const& rhs) -> bool {
-        if (lhs.ptr == rhs.ptr)
-            return true;
-        if (!lhs.ptr || !rhs.ptr)
-            return false;
-        return *lhs.ptr == *rhs.ptr;
-    }
-};
-
-template <typename A, typename... Args>
-constexpr auto make_box(Args&&... args) -> Box<A> {
-    return Box<A>(new A(std::forward<Args>(args)...));
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/box.hpp::45a64b08-8217-4baf-b19b-146434de1e44]]  :lines 2- :src cpp :end "45a64b08-8217-4baf-b19b-146434de1e44 end"
 
 Copying a ~Box<A>~ deep-copies the wrapped value.
 This is exactly what is wanted here --- trees are values.
@@ -252,29 +114,12 @@ Milewski [cite:@milewski2013falgebras] [cite:@milewski2017falgebras] develops th
 
 From [[orgit-file:include/beman/tree_algorithms/fix.hpp][=include/beman/tree_algorithms/fix.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/fix.hpp Fix struct
-#+begin_src C++
-template <template <typename> class F>
-struct Fix {
-    F<Fix<F>> inner;
-};
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/fix.hpp::57d4bd6e-c8c7-4806-afd3-2e42aec8ae27]]  :lines 2- :src cpp :end "57d4bd6e-c8c7-4806-afd3-2e42aec8ae27 end"
 
 The type equation is $\mathit{Fix}\langle F \rangle \cong F\langle \mathit{Fix}\langle F \rangle \rangle$.
 That isomorphism is witnessed by two trivial functions:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/fix.hpp wrap_fix + unwrap_fix
-#+begin_src C++
-template <template <typename> class F>
-constexpr auto wrap_fix(F<Fix<F>> layer) -> Fix<F> {
-    return Fix<F>{std::move(layer)};
-}
-
-template <template <typename> class F>
-constexpr auto unwrap_fix(const Fix<F>& fixed) -> const F<Fix<F>>& {
-    return fixed.inner;
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/fix.hpp::53775b7e-8a78-4b79-885b-046f6232d7a3]]  :lines 2- :src cpp :end "53775b7e-8a78-4b79-885b-046f6232d7a3 end"
 
 ~wrap_fix~ packs one layer into the fixed-point wrapper.
 ~unwrap_fix~ exposes the layer inside.
@@ -313,11 +158,7 @@ I described this pattern in more detail in [[https://sdowney.org/posts/index.php
 
 From [[orgit-file:include/beman/tree_algorithms/functor.hpp][=include/beman/tree_algorithms/functor.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/functor.hpp functor_typeclass variable template default
-#+begin_src C++
-template <class T>
-inline constexpr auto functor_typeclass = std::false_type{};
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/functor.hpp::5cdef435-de62-4973-91f4-a56dbef659f3]]  :lines 2- :src cpp :end "5cdef435-de62-4973-91f4-a56dbef659f3 end"
 
 Default: ~false_type~.
 No instance.
@@ -325,39 +166,7 @@ A type opts in by specializing the template.
 
 Here is the instance for ~ExprF~, from [[orgit-file:include/beman/tree_algorithms/expression.hpp][=include/beman/tree_algorithms/expression.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/expression.hpp ExprFFunctorImpl + ExprFFunctorMap + functor_typeclass<ExprF<A>> specialization
-#+begin_src C++
-template <typename A>
-struct ExprFFunctorImpl {
-    template <typename Fn>
-    constexpr auto fmap(this auto&&, Fn&& fn, const ExprF<A>& layer) {
-        using B = std::remove_cvref_t<std::invoke_result_t<Fn, const A&>>;
-        return std::visit(
-            overloaded{
-                [](const Const<A>& c) -> ExprF<B> {
-                    return Const<B>{c.val};
-                },
-                [&](const Add<A>& a) -> ExprF<B> {
-                    return Add<B>{make_box<B>(std::invoke(fn, *a.left)),
-                                  make_box<B>(std::invoke(fn, *a.right))};
-                },
-                [&](const Mul<A>& m) -> ExprF<B> {
-                    return Mul<B>{make_box<B>(std::invoke(fn, *m.left)),
-                                  make_box<B>(std::invoke(fn, *m.right))};
-                },
-            },
-            layer);
-    }
-};
-
-template <typename A>
-struct ExprFFunctorMap : Functor<ExprFFunctorImpl<A>> {
-    using ExprFFunctorImpl<A>::fmap;
-};
-
-template <typename A>
-inline constexpr auto functor_typeclass<ExprF<A>> = ExprFFunctorMap<A>{};
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/expression.hpp::a052ddcb-f05b-41c9-85bf-4c443ab438b7]]  :lines 2- :src cpp :end "a052ddcb-f05b-41c9-85bf-4c443ab438b7 end"
 
 The specialization is three lines at the bottom.
 No inheritance from the data type, no central registry, no modification to the ~variant~ definition.
@@ -377,34 +186,11 @@ Smart constructors hide the ceremony.
 
 Also in [[orgit-file:include/beman/tree_algorithms/expression.hpp][=expression.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/expression.hpp smart constructors (const_node/add_node/mul_node)
-#+begin_src C++
-using Expr = Fix<ExprF>;
-
-constexpr auto const_node(int v) -> Expr {
-    return wrap_fix<ExprF>(ExprF<Expr>{Const<Expr>{v}});
-}
-
-constexpr auto add_node(Expr l, Expr r) -> Expr {
-    return wrap_fix<ExprF>(ExprF<Expr>{Add<Expr>{
-        make_box<Expr>(std::move(l)),
-        make_box<Expr>(std::move(r))}});
-}
-
-constexpr auto mul_node(Expr l, Expr r) -> Expr {
-    return wrap_fix<ExprF>(ExprF<Expr>{Mul<Expr>{
-        make_box<Expr>(std::move(l)),
-        make_box<Expr>(std::move(r))}});
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/expression.hpp::d0f9b5a2-363f-49ca-9a37-bfb0e6c9ff50]]  :lines 2- :src cpp :end "d0f9b5a2-363f-49ca-9a37-bfb0e6c9ff50 end"
 
 Now ~(1 + 2) * 3~ reads naturally:
 
-# TRANSCLUDE-TODO: tests/beman/tree_algorithms/expression.test.cpp build (1+2)*3 usage snippet
-#+begin_src C++
-auto tree = mul_node(add_node(const_node(1), const_node(2)),
-                     const_node(3));
-#+end_src
+#+transclude: [[file:../tests/beman/tree_algorithms/expression.test.cpp::5033568c-a02f-44b0-964b-7076ebb06d43]]  :lines 2- :src cpp :end "5033568c-a02f-44b0-964b-7076ebb06d43 end"
 
 * Recursion Schemes: Separating Recursion from Business Logic
 
@@ -419,18 +205,7 @@ The algebra just combines them.
 
 From [[orgit-file:include/beman/tree_algorithms/expression.hpp][=include/beman/tree_algorithms/expression.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/expression.hpp eval_algebra
-#+begin_src C++
-inline constexpr auto eval_algebra = [](const ExprF<int>& expr) -> int {
-    return std::visit(
-        overloaded{
-            [](const Const<int>& c) { return c.val; },
-            [](const Add<int>&   a) { return *a.left + *a.right; },
-            [](const Mul<int>&   m) { return *m.left * *m.right; },
-        },
-        expr);
-};
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/expression.hpp::bbf73c10-b63e-434a-91f1-d1a3a7c23b96]]  :lines 2- :src cpp :end "bbf73c10-b63e-434a-91f1-d1a3a7c23b96 end"
 
 Not recursive.
 Does not know or care how deep the tree is.
@@ -445,21 +220,7 @@ At each node it maps the recursive fold over the children (via ~fmap~), then app
 The primary form takes the functor's ~fmap~ explicitly as a parameter.
 From [[orgit-file:include/beman/tree_algorithms/recursion_schemes.hpp][=include/beman/tree_algorithms/recursion_schemes.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/recursion_schemes.hpp fold_fix explicit-fmap overload
-#+begin_src C++
-template <typename Result, template <typename> class F,
-          typename Algebra, typename FMap>
-constexpr auto fold_fix(const Algebra& algebra, const FMap& fmap_fn,
-                        const Fix<F>& tree) -> Result {
-    const auto& layer = unwrap_fix(tree);
-    auto evaluated = fmap_fn(
-        [&](const Fix<F>& child) -> Result {
-            return fold_fix<Result>(algebra, fmap_fn, child);
-        },
-        layer);
-    return algebra(evaluated);
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/recursion_schemes.hpp::6859fdfc-3e1c-4d8a-9375-521df52ff499]]  :lines 2- :src cpp :end "6859fdfc-3e1c-4d8a-9375-521df52ff499 end"
 
 The result type is a leading explicit template parameter because C++ cannot infer a fold's carrier through the recursive calls the way Haskell infers types.
 Note the ~constexpr~: the whole pipeline --- ~Box~ allocation included --- works in constant evaluation.
@@ -508,78 +269,31 @@ In practice you rarely want to write the ~fmap~ argument at every call site.
 A second overload drops it and resolves ~fmap~ through ~functor_typeclass~ lookup instead.
 The bridge is one function, from [[orgit-file:include/beman/tree_algorithms/recursion_schemes_lookup.hpp][=include/beman/tree_algorithms/recursion_schemes_lookup.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/recursion_schemes_lookup.hpp layer_fmap
-#+begin_src C++
-template <class Fn, class Layer>
-constexpr auto layer_fmap(Fn&& fn, const Layer& layer) {
-    return functor_typeclass<std::remove_cvref_t<Layer>>.fmap(
-        std::forward<Fn>(fn), layer);
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/recursion_schemes_lookup.hpp::f6936d93-a4aa-4e85-afd1-092d4bbb1ba1]]  :lines 2- :src cpp :end "f6936d93-a4aa-4e85-afd1-092d4bbb1ba1 end"
 
 ~layer_fmap~ looks up the Functor instance for the concrete layer type and applies it.
 A layer type without an instance fails at compile time, at the lookup, with a diagnostic that names the missing specialization.
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/recursion_schemes_lookup.hpp fold_fix lookup overload
-#+begin_src C++
-template <typename Result, template <typename> class F, typename Algebra>
-constexpr auto fold_fix(const Algebra& algebra, const Fix<F>& tree)
-    -> Result {
-    const auto& layer = unwrap_fix(tree);
-    auto evaluated = layer_fmap(
-        [&](const Fix<F>& child) -> Result {
-            return fold_fix<Result>(algebra, child);
-        },
-        layer);
-    return algebra(evaluated);
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/recursion_schemes_lookup.hpp::d4f69d2f-787b-4741-ae82-971f0ff36b9e]]  :lines 2- :src cpp :end "d4f69d2f-787b-4741-ae82-971f0ff36b9e end"
 
 The lookup overloads live in a separate convenience header.
 The primary explicit-~fmap~ verbs do not depend on the lookup machinery at all; the explicit form remains available as the escape hatch when you want to substitute a different ~fmap~ at one call site.
 
 Evaluation is one line:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/expression.hpp eval function
-#+begin_src C++
-constexpr auto eval(const Expr& expr) -> int {
-    return fold_fix<int>(eval_algebra, expr);
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/expression.hpp::66235297-8e2a-4610-b6a4-a3f2a8837fb0]]  :lines 2- :src cpp :end "66235297-8e2a-4610-b6a4-a3f2a8837fb0 end"
 
 Because everything is ~constexpr~, the test suite evaluates ~eval~ inside a ~static_assert~ --- the tree is built, folded, and torn down at compile time.
 
 ** A Different Algebra, A Different Result
 
 The payoff: a new operation on the tree is just a new algebra.
-Here is a pretty-printer that produces a string instead of a number.
+The test suite defines ~print_algebra~, an ~ExprF<std::string> \to std::string~ function shaped exactly like ~eval_algebra~ above, except it builds a parenthesized string instead of an int.
 No new recursion code.
 
-From [[orgit-file:tests/beman/tree_algorithms/recursion_schemes.test.cpp][=tests/beman/tree_algorithms/recursion_schemes.test.cpp=]]:
+From [[orgit-file:tests/beman/tree_algorithms/expression.test.cpp][=tests/beman/tree_algorithms/expression.test.cpp=]]:
 
-# TRANSCLUDE-TODO: tests/beman/tree_algorithms/recursion_schemes.test.cpp print_algebra example
-#+begin_src C++
-auto print_algebra = [](const ExprF<std::string>& expr) -> std::string {
-    return std::visit(
-        overloaded{
-            [](const Const<std::string>& c) {
-                return std::to_string(c.val);
-            },
-            [](const Add<std::string>& a) {
-                return "(" + *a.left + " + " + *a.right + ")";
-            },
-            [](const Mul<std::string>& m) {
-                return "(" + *m.left + " * " + *m.right + ")";
-            },
-        },
-        expr);
-};
-
-auto e = mul_node(add_node(const_node(1), const_node(2)),
-                  const_node(4));
-auto result = fold_fix<std::string>(print_algebra, e);
-// result == "((1 + 2) * 4)"
-#+end_src
+#+transclude: [[file:../tests/beman/tree_algorithms/expression.test.cpp::c1858641-8184-4907-ad06-14744a4ac1d2]]  :lines 2- :src cpp :end "c1858641-8184-4907-ad06-14744a4ac1d2 end"
 
 Same tree.
 Same ~fold_fix~.
@@ -601,20 +315,7 @@ A coalgebra is a function ~a \to F\langle a \rangle~ --- it takes a seed and pro
 
 From [[orgit-file:include/beman/tree_algorithms/recursion_schemes_lookup.hpp][=include/beman/tree_algorithms/recursion_schemes_lookup.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/recursion_schemes_lookup.hpp unfold_fix lookup overload
-#+begin_src C++
-template <template <typename> class F, typename Coalgebra, typename Seed>
-constexpr auto unfold_fix(const Coalgebra& coalgebra, const Seed& seed)
-    -> Fix<F> {
-    auto layer = coalgebra(seed);
-    auto expanded = layer_fmap(
-        [&](const Seed& child) -> Fix<F> {
-            return unfold_fix<F>(coalgebra, child);
-        },
-        layer);
-    return wrap_fix<F>(std::move(expanded));
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/recursion_schemes_lookup.hpp::2df7f7e0-ee8b-42b6-a0a8-1dfed05c8230]]  :lines 2- :src cpp :end "2df7f7e0-ee8b-42b6-a0a8-1dfed05c8230 end"
 
 Same structure as ~fold_fix~, inverted.
 The coalgebra generates the layer; ~fmap~ recurses into the seeds; ~wrap_fix~ closes it.
@@ -622,31 +323,13 @@ The coalgebra generates the layer; ~fmap~ recurses into the seeds; ~wrap_fix~ cl
 
 Building a Peano natural number from an ~int~, using the ~NatF~ functor that ships alongside ~ExprF~:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/functors.hpp NatF family (Zero, Succ, NatF alias)
-#+begin_src C++
-struct Zero {};
+#+transclude: [[file:../include/beman/tree_algorithms/functors.hpp::7970dd71-b5dd-4fa0-8e80-735a26833b65]]  :lines 2- :src cpp :end "7970dd71-b5dd-4fa0-8e80-735a26833b65 end"
 
-template <typename A>
-struct Succ {
-    Box<A> pred;
-};
+Alongside ~make_zero~/~make_succ~ smart constructors, the header ships two converters built on the two verbs seen so far: ~nat_from_int~ unfolds an ~int~ into a ~Nat~ with an inline coalgebra, and ~nat_to_int~ folds a ~Nat~ back down by counting ~Succ~ layers.
 
-template <typename A>
-using NatF = std::variant<Zero, Succ<A>>;
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/functors.hpp::f419286e-ec56-4291-9f09-d5528685805f]]  :lines 2- :src cpp :end "f419286e-ec56-4291-9f09-d5528685805f end"
 
-# TRANSCLUDE-TODO: tests/beman/tree_algorithms/recursion_schemes.test.cpp nat_coalgebra unfold example
-#+begin_src C++
-auto nat_coalgebra = [](int n) -> NatF<int> {
-    if (n <= 0) return Zero{};
-    return Succ<int>{make_box<int>(n - 1)};
-};
-
-auto three = unfold_fix<NatF>(nat_coalgebra, 3);
-// Succ(Succ(Succ(Zero)))
-#+end_src
-
-The coalgebra handles one layer.
+The coalgebra inside ~nat_from_int~ handles one layer.
 ~unfold_fix~ supplies the recursion.
 Same separation, other direction.
 
@@ -657,21 +340,7 @@ Sometimes I want to unfold a seed and immediately fold the result.
 
 From [[orgit-file:include/beman/tree_algorithms/recursion_schemes_lookup.hpp][=include/beman/tree_algorithms/recursion_schemes_lookup.hpp=]]:
 
-# TRANSCLUDE-TODO: include/beman/tree_algorithms/recursion_schemes_lookup.hpp refold lookup overload
-#+begin_src C++
-template <typename Result, template <typename> class F,
-          typename Algebra, typename Coalgebra, typename Seed>
-constexpr auto refold(const Algebra& algebra, const Coalgebra& coalgebra,
-                      const Seed& seed) -> Result {
-    auto layer = coalgebra(seed);
-    auto evaluated = layer_fmap(
-        [&](const Seed& child) -> Result {
-            return refold<Result, F>(algebra, coalgebra, child);
-        },
-        layer);
-    return algebra(evaluated);
-}
-#+end_src
+#+transclude: [[file:../include/beman/tree_algorithms/recursion_schemes_lookup.hpp::c75161e3-1aad-4549-86cc-1dc40d6623c8]]  :lines 2- :src cpp :end "c75161e3-1aad-4549-86cc-1dc40d6623c8 end"
 
 Compare with ~fold_fix~: where ~fold_fix~ calls ~unwrap_fix~ to get a layer from an existing tree, ~refold~ calls the coalgebra to generate it.
 ~fold_fix~ recurses into ~Fix<F>~ children; ~refold~ recurses into seeds.
@@ -703,7 +372,36 @@ The functions have no jargon aliases.
 
 ** The Engineering Reality of the Abstraction
 
-# TODO(4.3): engineering-reality section lands here
+Everything above isolates recursion from business logic: you write the shape of one layer and the evaluation of one node, and ~fold_fix~ supplies the traversal.
+That separation is real, and so are its costs.
+This library deliberately chooses value semantics --- layers are held and passed by value, ~Box~ deep-copies, and no sharing or memoization pass tries to claw the copies back --- so it is worth being explicit about where the bill arrives: at compile time, and in what the optimizer must do for you at run time.
+
+The first cost is compile-time latency.
+C++ has no true higher-kinded types, so the ~fmap~ that ~fold_fix~ depends on is emulated with template machinery: the compiler must instantiate the base functor at each carrier type, prove each instantiation well-formed, and do so recursively as the scheme threads results back up through the structure.
+Each individual instantiation is cheap; the concern is the aggregate.
+Across a large codebase --- many translation units, orchestrated by a build system coordinating a large dependency graph --- the overhead of instantiating these deeply nested template structures can measurably degrade build latency.
+# MEASURE: quantify instantiation counts and wall-clock compile cost for a representative ExprF/fold_fix TU against beman.tree_algorithms (e.g. -ftime-trace); the source essay asserts the tax but reports no numbers.
+
+The second cost is code generation.
+A hand-written ~std::visit~ over a recursive ~std::variant~ compiles down to a highly optimized jump table or switch --- O(1) dispatch per node, with the traversal loop visible to the optimizer as ordinary code.
+A recursion scheme instead hands the optimizer a stack of generic components --- the scheme, the ~fmap~, the algebra, and the ~Box~ unwrapping between layers --- and relies entirely on inlining to fuse them back into that same loop.
+When inlining succeeds, the abstraction can be free.
+When the nesting pushes past the compiler's inlining thresholds, it is not: the residue is bloated object code and runtime pointer-chasing through the indirections that ~Box~ introduces.
+# MEASURE: compare generated code size and per-node evaluation cost of fold_fix versus a hand-rolled std::visit walker on the same ExprF, at -O2, for beman.tree_algorithms; the jump-table-versus-inlining contrast comes from the source essay and has not been re-measured here.
+
+So when is it worth paying?
+The costs above are concentrated in the traversal machinery --- ~Fix~, ~Box~, ~fmap~, and the schemes --- and that machinery is precisely the part of the code that does not change.
+The algebras, which carry the business logic, are small, non-recursive, and cheap to compile.
+The amortization strategy follows directly: keep the machinery in stable, rarely-recompiled headers behind a settled interface, and let the frequently-edited code consist of algebras.
+Then the template-instantiation tax is paid when the machinery changes --- rarely --- while the everyday edit-compile loop touches only code that compiles like any other small function object.
+A codebase that edits its tree-walking logic often and its tree shapes rarely gets the good end of this trade; one that constantly invents new recursive shapes pays the tax repeatedly.
+
+Finally, the horizon.
+The visitation half of this story --- destructuring a sum type without ~std::visit~ boilerplate --- is also being pursued in the core language, in the pattern-matching lineage of P1371 ("Pattern Matching") and its successor P2688 ("Pattern Matching: match Expression").
+As of this writing neither has landed: pattern matching did not make C++26, and P2688 remains under Evolution Working Group review targeting a later standard.
+When a ~match~ expression does arrive, it will replace the per-node dispatch --- the ~std::get_if~ chains inside an algebra --- but not the traversal: something must still fold results up through the recursive structure.
+A library design should degrade gracefully into that world, and this one does: algebras written against the base functor become shorter and clearer under language pattern matching, while ~fold_fix~ keeps supplying exactly the part the language will still not provide.
+Until then, the recursion schemes eliminate visitor boilerplate by library means alone --- provided the build-time costs above can be amortized as described.
 
 * Adapting an Existing Binary Tree
 
@@ -711,7 +409,25 @@ Everything so far started from trees born as ~Fix<F>~.
 The point of the verbs, though, is that they are not tied to that representation: an existing binary tree --- whatever pointers or nodes it uses internally --- can participate by presenting one layer at a time as a base functor and registering an ~fmap~ for that layer.
 The algebra, the verbs, and the call site stay exactly the same; only the adapter knows how the tree is really stored.
 
-# TODO(3a): binary tree adapter example
+Suppose the tree already exists: a persistent ~BinaryTree<T>~, ported here unchanged, that stores a value at every node and holds its children by ~shared_ptr~, with a null pointer marking an absent child.
+~BinaryTreeF<T, A>~ is the base functor that presents one layer of it: a value plus two nullable ~Box<A>~ children, mirroring the tree's nullable ~shared_ptr~ children one for one.
+
+From [[orgit-file:include/beman/tree_algorithms/binary_tree.hpp][=include/beman/tree_algorithms/binary_tree.hpp=]]:
+
+#+transclude: [[file:../include/beman/tree_algorithms/binary_tree.hpp::27aeff53-a371-43b6-9037-135d5d008c26]]  :lines 2- :src cpp :end "27aeff53-a371-43b6-9037-135d5d008c26 end"
+
+Registering a Functor instance for ~BinaryTreeF<T, A>~ is the same three-part pattern already seen for ~ExprF~ --- an ~fmap~ primitive, a ~Functor~-derived map, and a ~functor_typeclass~ specialization --- so ~fold_fix~, ~unfold_fix~, and ~refold~ all work over it without any change to the verbs:
+
+#+transclude: [[file:../include/beman/tree_algorithms/binary_tree.hpp::91fef612-39b5-4424-8ab5-7d8c80997e2c]]  :lines 2- :src cpp :end "91fef612-39b5-4424-8ab5-7d8c80997e2c end"
+
+Two conversions bridge the representations: ~to_fix~ walks the ~shared_ptr~ tree layer by layer into ~Fix~ form, and ~from_fix~ walks it back --- ~from_fix~ is itself a fold, its algebra doing nothing more than reassembling one ~BinaryTree~ node from children that ~fold_fix~ has already rebuilt:
+
+#+transclude: [[file:../include/beman/tree_algorithms/binary_tree.hpp::a7ed3ac1-4c61-4ae4-a633-f26216a39ac5]]  :lines 2- :src cpp :end "a7ed3ac1-4c61-4ae4-a633-f26216a39ac5 end"
+
+Put together: build a ~BinaryTree<int>~ with its own factory functions, adapt it with ~to_fix~, fold it with the identical ~fold_fix~ used for expressions throughout this article, and round-trip it back with ~from_fix~.
+Only the adapter knows the tree is really a ~shared_ptr~ structure; the algebra and the call site never do.
+
+#+transclude: [[file:../examples/binary_tree_adapt.cpp::fba6bbba-6cd8-4f4f-ba18-b584cf672a79]]  :lines 2- :src cpp :end "fba6bbba-6cd8-4f4f-ba18-b584cf672a79 end"
 
 * The Bigger Picture
 

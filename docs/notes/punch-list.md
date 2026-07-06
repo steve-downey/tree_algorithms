@@ -33,6 +33,12 @@ Accumulated from sub-agent reports; resolve or explicitly waive before R0.
 - Verify the `std::indirect` paper number cited in References (P3019) before publication.
 - Replace `DnnnnR0` once a real number is assigned; synopsis code block carries a SYNOPSIS-TRANSCLUDE-TODO for Task 4.4.
 
+## From Task 4.4 (transclusion wiring)
+
+- No org-export verification possible here: repo has no `.emacs.d`/export target and org-transclusion isn't installed; mirror trees/main's export setup if HTML/PDF output is wanted.
+- Paper synopsis is a manually-diffed mirror of the headers (pandoc wg21 filter has no include mechanism); re-diff on any signature change — HTML comment in the paper flags this.
+- `unfold_fix`/`refold` explicit-fmap overloads in recursion_schemes.hpp are unanchored (not currently transcluded anywhere); anchor if a future revision needs them.
+
 ## Deferred by design
 
 - Foldable/Traversable article material (source lines 572-796) earmarked for a follow-up article; not in the minimal core.

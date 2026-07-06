@@ -161,10 +161,28 @@ The explicit-`fmap` primary verbs are the surface that remains fully valid even 
 
 Namespace and header names below follow the reference implementation (`beman::tree_algorithms`) and are placeholders for LEWG naming review.
 
+<!--
+This synopsis is hand-maintained, not transcluded: the WG21 pandoc pipeline
+in fixpoint/main/papers/wg21 (data/filters/wg21.py, driven by the Makefile's
+`$(PANDOC) --bibliography ...` rule) is a formatting filter only — it
+resolves cmptable layout, stable names, and coloring, with no file-include
+or transclusion directive comparable to org-transclusion. Markdown has no
+equivalent mechanism available in this build. The signatures below mirror,
+verbatim, the following anchored regions in beman.tree_algorithms:
+  - include/beman/tree_algorithms/recursion_schemes.hpp
+    fold_fix (explicit-fmap primary verb): anchor 6859fdfc-3e1c-4d8a-9375-521df52ff499
+    (unfold_fix/refold explicit-fmap overloads follow immediately in the
+    same header; they are not individually anchored)
+  - include/beman/tree_algorithms/recursion_schemes_lookup.hpp
+    fold_fix (lookup overload): anchor d4f69d2f-787b-4741-ae82-971f0ff36b9e
+    unfold_fix (lookup overload): anchor 2df7f7e0-ee8b-42b6-a0a8-1dfed05c8230
+    refold (lookup overload): anchor c75161e3-1aad-4549-86cc-1dc40d6623c8
+Checked against: manually diffed against the headers above on 2026-07-06;
+identical modulo trailing semicolons (this is a declaration-only synopsis)
+and line wrapping. Re-diff before every revision that touches these
+headers, since drift here will not be caught by the build.
+-->
 ```cpp
-// SYNOPSIS-TRANSCLUDE-TODO: replace with transclusion from
-// include/beman/tree_algorithms/ headers
-
 namespace beman::tree_algorithms {
 
 // Recursive fold (catamorphism in the literature).
@@ -248,10 +266,20 @@ Its role is evidence: the three proposed verbs are the stable primitive layer of
 
 ## Costs
 
-<!-- TODO(4.3): condensed engineering-reality subsection lands here -->
+We are upfront about the costs of this design; they are better stated by the authors than discovered by reviewers.
+The library chooses value semantics throughout — layers are passed by value, `Box` deep-copies, and there is no sharing or memoization — and the abstraction itself has two costs beyond the copies.
+First, compile time: C++ lacks higher-kinded types, so the `fmap` that `fold_fix` requires is emulated by template machinery, and the compiler performs deep, recursive template instantiation to type-check each scheme at each carrier type.
+Across a large codebase this instantiation overhead can measurably degrade build latency.
+<!-- MEASURE: no compile-time numbers exist for beman.tree_algorithms; the claim is qualitative, from the source cost analysis. Re-measure (e.g. -ftime-trace) before P-numbering. -->
 
-The proposal will be candid about real costs rather than leaving them for reviewers to discover.
-The two known cost centers are compile time — heavy reliance on fixpoint combinators and recursive template instantiation taxes build latency at scale — and codegen, which depends on the optimizer inlining the generic traversal, with pointer-chasing and code-bloat risk when it does not.
+Second, code generation: a hand-written `std::visit` traversal compiles to a jump table or switch with O(1) dispatch, whereas a recursion scheme relies entirely on the optimizer to inline the generic traversal, the algebra, and the `Box` unwrapping into an equivalent loop.
+When the structure's nesting exceeds inlining thresholds, the result is larger object code and runtime pointer-chasing rather than a fused traversal.
+<!-- MEASURE: codegen size and per-node cost versus a manual std::visit walker have not been re-measured for this implementation. -->
+These costs amortize well in one common deployment: the traversal machinery is stable and lives in rarely-recompiled headers, while the frequently-edited code consists of small, non-recursive algebras that compile like ordinary function objects.
+
+We also note the language-evolution horizon.
+Core-language pattern matching (P1371 "Pattern Matching"; superseded by P2688 "Pattern Matching: match Expression", still under EWG review after missing C++26) would replace the per-node dispatch inside an algebra, not the recursive traversal itself.
+The proposed facility degrades gracefully into that future: algebras get shorter under a `match` expression, and `fold_fix` continues to supply the fold that the core language will still not provide.
 
 # Non-goals
 

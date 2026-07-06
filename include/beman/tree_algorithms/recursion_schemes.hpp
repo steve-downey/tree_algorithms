@@ -37,6 +37,7 @@ namespace beman::tree_algorithms {
  * @param fmap_fn  callable (Fn, const F<A>&) -> F<B> — the functor's fmap
  * @param tree     the fixed-point value to fold
  */
+// 6859fdfc-3e1c-4d8a-9375-521df52ff499
 template <typename Result, template <typename> class F, typename Algebra, typename FMap>
 constexpr auto fold_fix(const Algebra& algebra, const FMap& fmap_fn, const Fix<F>& tree) -> Result {
     const auto& layer = unwrap_fix(tree);
@@ -44,6 +45,7 @@ constexpr auto fold_fix(const Algebra& algebra, const FMap& fmap_fn, const Fix<F
         fmap_fn([&](const Fix<F>& child) -> Result { return fold_fix<Result>(algebra, fmap_fn, child); }, layer);
     return algebra(evaluated);
 }
+// 6859fdfc-3e1c-4d8a-9375-521df52ff499 end
 
 /** Recursive build (unfold): grow a Fix<F> tree top-down from a seed.
  *
