@@ -8,17 +8,22 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <functional>
+#include <memory>
+#include <memory_resource>
 #include <string>
 #include <type_traits>
 #include <utility>
 
 using beman::tree_algorithms::BinaryTree;
+using beman::tree_algorithms::binary_tree_default_allocator;
 using beman::tree_algorithms::BinaryTreeF;
 using beman::tree_algorithms::BinaryTreeFix;
 using beman::tree_algorithms::BinaryTreeLayer;
 using beman::tree_algorithms::Box;
 using beman::tree_algorithms::child_slot_t;
+using beman::tree_algorithms::Fix;
 using beman::tree_algorithms::fold_fix;
 using beman::tree_algorithms::fold_with;
 using beman::tree_algorithms::from_fix;
@@ -29,6 +34,7 @@ using beman::tree_algorithms::make_slot;
 using beman::tree_algorithms::refold;
 using beman::tree_algorithms::to_fix;
 using beman::tree_algorithms::unfold_fix;
+using beman::tree_algorithms::unwrap_fix;
 using beman::tree_algorithms::wrap_fix;
 
 namespace {
@@ -112,6 +118,20 @@ static_assert(has_functor_instance<BinaryTreeF<int, int>>);
 static_assert(has_functor_instance<BinaryTreeF<int, IntFixed>>);
 static_assert(!has_functor_instance<IntTree>);
 
+// ---------------------------------------------------------------------
+// Allocator additivity (WP-5): BinaryTreeF grew a defaulted Allocator
+// parameter (Option A, Decision 9), so every existing one/two-argument
+// spelling must still name the exact same type as before.
+// ---------------------------------------------------------------------
+
+static_assert(std::is_same_v<BinaryTreeF<int, int>, BinaryTreeF<int, int, binary_tree_default_allocator>>);
+static_assert(std::is_same_v<BinaryTreeF<int, IntFixed>, BinaryTreeF<int, IntFixed, binary_tree_default_allocator>>);
+static_assert(std::is_same_v<child_slot_t<IntFixed>, child_slot_t<IntFixed, binary_tree_default_allocator>>);
+static_assert(
+    std::is_same_v<BinaryTreeFix<int>, Fix<BinaryTreeLayer<int, binary_tree_default_allocator>::template F>>);
+static_assert(std::is_same_v<Box<IntFixed>, child_slot_t<IntFixed>>,
+              "the knot Box must still be exactly Box<IntFixed> with the default allocator");
+
 // fold_fix, both APIs: node(1, leaf 2, leaf 3) gives (2 - 1) - 3 == -2;
 // the mirrored tree gives (3 - 1) - 2 == 0, so child order matters.
 constexpr auto subtract_in_order() -> int {
@@ -146,6 +166,51 @@ constexpr auto decrement_three_tens() -> int {
 }
 
 static_assert(decrement_three_tens() == 27);
+
+// ---------------------------------------------------------------------
+// A counting allocator for the WP-5 gate: allocate()/deallocate() go
+// straight through allocator_traits with no pmr indirection, so counts
+// here prove the allocator-tagged to_fix/from_fix/leaf/node/make_ptr
+// factories route every allocation through the SUPPLIED allocator, not a
+// fixed default. Single-parameter on purpose: allocator_traits derives
+// rebind_alloc<U> as tracking_alloc<U> automatically (no nested rebind
+// member needed), so one type serves every rebound position (the knot
+// Box, and allocate_shared's internal control-block type alike).
+// ---------------------------------------------------------------------
+
+struct alloc_stats {
+    int allocations   = 0;
+    int deallocations = 0;
+    constexpr auto live() const -> int { return allocations - deallocations; }
+};
+
+template <typename T>
+struct tracking_alloc {
+    using value_type = T;
+
+    alloc_stats* stats = nullptr;
+    int          id    = 0;
+
+    // Default-constructible (stats == nullptr) so a disengaged child_slot
+    // — child_slot_t<A, Allocator>{} for an absent child — can default-
+    // construct its Box's stored allocator, exactly as a default-
+    // constructed std::pmr::polymorphic_allocator can; a disengaged slot
+    // never calls allocate()/deallocate(), so the null stats pointer is
+    // never dereferenced.
+    tracking_alloc() = default;
+    tracking_alloc(alloc_stats* s, int i) : stats(s), id(i) {}
+    template <typename U>
+    tracking_alloc(const tracking_alloc<U>& o) : stats(o.stats), id(o.id) {}
+
+    auto allocate(std::size_t n) -> T* {
+        stats->allocations += 1;
+        return std::allocator<T>{}.allocate(n);
+    }
+    void deallocate(T* p, std::size_t n) {
+        stats->deallocations += 1;
+        std::allocator<T>{}.deallocate(p, n);
+    }
+};
 
 } // namespace
 
@@ -287,4 +352,131 @@ TEST_CASE("BinaryTree - FmapPreservesAbsentChildrenAndValue", "[tree_algorithms:
     REQUIRE(replaced.left.has_value());
     CHECK(*replaced.left == 9);
     CHECK(!replaced.right.has_value());
+}
+
+// ---------------------------------------------------------------------
+// WP-5 gate: allocator-tagged leaf/node/make_ptr build the shared_ptr
+// side through a supplied allocator (D-A5); allocator-tagged
+// to_fix/from_fix route the Fix side and the rebuilt shared_ptr side
+// through it too (Decision 9). A tracking allocator counts every
+// allocate/deallocate call directly, proving the SUPPLIED allocator was
+// used, not just that the default one was left alone.
+// ---------------------------------------------------------------------
+
+TEST_CASE("BinaryTree - AllocatorTaggedLeafNodeAndMakePtr", "[tree_algorithms::binary_tree]") {
+    alloc_stats             stats{};
+    tracking_alloc<std::byte> a(&stats, 7);
+
+    // A leaf allocates nothing: no children to wrap in a shared_ptr.
+    auto leaf4 = IntTree::leaf(std::allocator_arg, a, 4);
+    CHECK(leaf4.value() == 4);
+    CHECK_FALSE(leaf4.has_left());
+    CHECK_FALSE(leaf4.has_right());
+    CHECK(stats.allocations == 0);
+
+    auto leaf5 = IntTree::leaf(std::allocator_arg, a, 5);
+
+    // node() allocates exactly one shared_ptr control block per child.
+    auto inner = IntTree::node(std::allocator_arg, a, 2, std::move(leaf4), std::move(leaf5));
+    CHECK(inner.value() == 2);
+    CHECK(inner.left().value() == 4);
+    CHECK(inner.right().value() == 5);
+    CHECK(stats.allocations == 2);
+
+    // make_ptr() allocates one more, wrapping the whole subtree.
+    auto ptr = IntTree::make_ptr(std::allocator_arg, a, std::move(inner));
+    CHECK(stats.allocations == 3);
+    CHECK(ptr->value() == 2);
+    CHECK(ptr->left().value() == 4);
+}
+
+TEST_CASE("BinaryTree - AllocatorTaggedToFixFromFixRouteThroughTheSuppliedAllocator", "[tree_algorithms::binary_tree]") {
+    // node(1, node(2, leaf(4), leaf(5)), leaf(3)): 4 non-root nodes, so 4
+    // engaged child positions overall.
+    auto t = IntTree::node(1, IntTree::node(2, IntTree::leaf(4), IntTree::leaf(5)), IntTree::leaf(3));
+
+    alloc_stats               to_fix_stats{};
+    tracking_alloc<std::byte> to_fix_alloc(&to_fix_stats, 1);
+    alloc_stats               from_fix_stats{};
+    tracking_alloc<std::byte> from_fix_alloc(&from_fix_stats, 2);
+
+    {
+        auto fixed = to_fix(std::allocator_arg, to_fix_alloc, t);
+
+        // 4 engaged child positions -> 4 knot Box allocations, all live
+        // while `fixed` is.
+        CHECK(to_fix_stats.allocations == 4);
+        CHECK(to_fix_stats.live() == 4);
+
+        // Every knot Box on the built tree carries our allocator (its id,
+        // not just "some allocator of the right type").
+        const auto& root = unwrap_fix(fixed);
+        REQUIRE(root.left);
+        REQUIRE(root.right);
+        CHECK(root.left.get_allocator().id == to_fix_alloc.id);
+        CHECK(root.right.get_allocator().id == to_fix_alloc.id);
+        const auto& left = unwrap_fix(*root.left);
+        REQUIRE(left.left);
+        REQUIRE(left.right);
+        CHECK(left.left.get_allocator().id == to_fix_alloc.id);
+        CHECK(left.right.get_allocator().id == to_fix_alloc.id);
+
+        // Round-trip through the shared_ptr side: from_fix's rebuild
+        // algebra threads a SEPARATE allocator convention into
+        // allocate_shared for every reconstructed child, proving the two
+        // sides (Fix-side Box, shared_ptr-side control block) each honor
+        // their own tag independently.
+        auto round = from_fix(std::allocator_arg, from_fix_alloc, fixed);
+
+        CHECK(from_fix_stats.allocations == 4);
+        CHECK(round.value() == 1);
+        CHECK(round.left().value() == 2);
+        CHECK(round.right().value() == 3);
+        CHECK(round.left().left().value() == 4);
+        CHECK(round.left().right().value() == 5);
+        CHECK(fold_fix<std::string>(show_algebra, to_fix(round)) == fold_fix<std::string>(show_algebra, to_fix(t)));
+    }
+    // `fixed` (and every knot Box it owned) is destroyed at the end of the
+    // block above: allocation/deallocation balance on to_fix_alloc is the
+    // final proof that the tagged conversion neither leaked nor freed
+    // through some other allocator.
+    CHECK(to_fix_stats.deallocations == 4);
+    CHECK(to_fix_stats.live() == 0);
+}
+
+TEST_CASE("BinaryTree - PmrToFixFromFixRouteThroughTheResource", "[tree_algorithms::binary_tree]") {
+    // Option A propagation proof, mirrored on the WP-4/WP-5-expr pmr
+    // gate tests: a monotonic pool over a null_memory_resource upstream
+    // — any allocation escaping the buffer would throw. to_fix's knot
+    // Boxes are directly queryable (get_allocator().resource()); from_fix's
+    // shared_ptr side is not (allocate_shared's control block is opaque,
+    // per D-A5's "no per-node storage" trade), so a completed round trip
+    // with no throw is the proof there.
+    using PA = std::pmr::polymorphic_allocator<std::byte>;
+
+    alignas(std::max_align_t) unsigned char             buffer[16 * 1024];
+    std::pmr::monotonic_buffer_resource pool(buffer, sizeof(buffer), std::pmr::null_memory_resource());
+    PA                                   a(&pool);
+
+    auto t = IntTree::node(1, IntTree::node(2, IntTree::leaf(4), IntTree::leaf(5)), IntTree::leaf(3));
+
+    auto fixed = to_fix(std::allocator_arg, a, t);
+
+    const auto& root = unwrap_fix(fixed);
+    REQUIRE(root.left);
+    REQUIRE(root.right);
+    CHECK(root.left.get_allocator().resource() == &pool);
+    CHECK(root.right.get_allocator().resource() == &pool);
+    const auto& left = unwrap_fix(*root.left);
+    CHECK(left.left.get_allocator().resource() == &pool);
+    CHECK(left.right.get_allocator().resource() == &pool);
+
+    auto round = from_fix(std::allocator_arg, a, fixed);
+    CHECK(round.value() == 1);
+    CHECK(round.left().value() == 2);
+    CHECK(round.right().value() == 3);
+    CHECK(round.left().left().value() == 4);
+    CHECK(round.left().right().value() == 5);
+
+    CHECK(fold_fix<std::string>(show_algebra, to_fix(round)) == fold_fix<std::string>(show_algebra, to_fix(t)));
 }
