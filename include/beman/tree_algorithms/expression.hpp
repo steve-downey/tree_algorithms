@@ -40,8 +40,16 @@ namespace beman::tree_algorithms {
 // ---------------------------------------------------------------------
 
 // 085bb189-a48e-4262-aefd-b64f8755e959
+/** The allocator a layer's Box-at-knot children default to. A fixed
+ * (value-type-independent) spelling so the one-argument alternative
+ * spellings — Add<A>, Mul<A> — name exactly the same type the default
+ * ExprF variant holds; child_slot rebinds it to Fix at the knot, so this
+ * is Box<Fix, std::allocator<Fix>> as before (Decision 9, 2026-07-18
+ * amendment). */
+using expr_default_allocator = std::allocator<std::byte>;
+
 /** Constant leaf alternative; carries an int literal and no recursive
- * positions.
+ * positions, so it needs no allocator parameter.
  * @tparam A recursive position placeholder (not yet fixed)
  */
 template <typename A>
@@ -50,25 +58,38 @@ struct Const {
 };
 
 /** Addition node alternative; left and right sub-expressions in child
- * slots — boxed at the knot, inline at complete types. */
-template <typename A>
+ * slots — boxed at the knot, inline at complete types. Parameterized on
+ * the allocator so a stateful (pmr) allocator can live in the knot Box;
+ * the default is the stateless std::allocator, unchanged.
+ * @tparam A recursive position placeholder
+ * @tparam Allocator allocator carried at the knot */
+template <typename A, typename Allocator = expr_default_allocator>
 struct Add {
-    child_slot_t<A> left, right;
+    child_slot_t<A, Allocator> left, right;
 };
 
 /** Multiplication node alternative; left and right sub-expressions in
  * child slots. */
-template <typename A>
+template <typename A, typename Allocator = expr_default_allocator>
 struct Mul {
-    child_slot_t<A> left, right;
+    child_slot_t<A, Allocator> left, right;
+};
+
+/** Binds the allocator of an expression layer, leaving the unary-in-A
+ * alias template @c F that Fix and the verbs require (à la RoseLayer<T>). */
+template <typename Allocator>
+struct ExprLayer {
+    template <typename A>
+    using F = std::variant<Const<A>, Add<A, Allocator>, Mul<A, Allocator> >;
 };
 
 /** Non-recursive expression base functor: one layer of an expression tree
- * with @p A filling the recursive positions. Expr = Fix<ExprF> ties the
- * knot.
+ * with @p A filling the recursive positions, over the default (stateless)
+ * allocator. Expr = Fix<ExprF> ties the knot. A pmr expression tree is
+ * Fix<ExprLayer<pmr-allocator>::template F>.
  */
 template <typename A>
-using ExprF = std::variant<Const<A>, Add<A>, Mul<A> >;
+using ExprF = ExprLayer<expr_default_allocator>::template F<A>;
 // 085bb189-a48e-4262-aefd-b64f8755e959 end
 
 // ---------------------------------------------------------------------
@@ -76,39 +97,88 @@ using ExprF = std::variant<Const<A>, Add<A>, Mul<A> >;
 // ---------------------------------------------------------------------
 
 // a052ddcb-f05b-41c9-85bf-4c443ab438b7
-/** Functor primitive for ExprF<A>: applies @p fn at each recursive
- * position of one layer. Constants have no recursive positions, so the
- * value copies across untouched.
+/** Functor primitive for an expression layer over @p Allocator: applies
+ * @p fn at each recursive position of one layer. Constants have no
+ * recursive positions, so the value copies across untouched. This
+ * primitive boxes with the default allocator, which is correct for the
+ * default (stateless) tree and for any fold (fold layers store children
+ * inline, so the allocator type never reaches a Box). Unfolding a stateful
+ * (pmr) tree needs the resource value, which no fixed lookup object can
+ * carry — use expr_fmap(alloc) with the explicit-fmap verbs for that.
  */
-template <typename A>
+template <typename A, typename Allocator>
 struct ExprFFunctorImpl {
+    using Layer = typename ExprLayer<Allocator>::template F<A>;
+    template <typename B>
+    using LayerB = typename ExprLayer<Allocator>::template F<B>;
+
     template <typename Fn>
-    constexpr auto fmap(this auto&&, Fn&& fn, const ExprF<A>& layer) {
+    constexpr auto fmap(this auto&&, Fn&& fn, const Layer& layer) {
         using B = std::remove_cvref_t<std::invoke_result_t<Fn, const A&> >;
         return std::visit(
             overloaded{
-                [](const Const<A>& c) -> ExprF<B> { return Const<B>{c.val}; },
-                [&fn](const Add<A>& a) -> ExprF<B> {
-                    return Add<B>{make_slot<B>(std::invoke(fn, *a.left)), make_slot<B>(std::invoke(fn, *a.right))};
+                [](const Const<A>& c) -> LayerB<B> { return Const<B>{c.val}; },
+                [&fn](const Add<A, Allocator>& a) -> LayerB<B> {
+                    return Add<B, Allocator>{make_slot<B>(std::invoke(fn, *a.left)),
+                                             make_slot<B>(std::invoke(fn, *a.right))};
                 },
-                [&fn](const Mul<A>& m) -> ExprF<B> {
-                    return Mul<B>{make_slot<B>(std::invoke(fn, *m.left)), make_slot<B>(std::invoke(fn, *m.right))};
+                [&fn](const Mul<A, Allocator>& m) -> LayerB<B> {
+                    return Mul<B, Allocator>{make_slot<B>(std::invoke(fn, *m.left)),
+                                             make_slot<B>(std::invoke(fn, *m.right))};
                 },
             },
             layer);
     }
 };
 
-/** Functor map for ExprF<A>: the fmap primitive plus the derived
- * operations from the Functor CRTP base. */
-template <typename A>
-struct ExprFFunctorMap : Functor<ExprFFunctorImpl<A> > {
-    using ExprFFunctorImpl<A>::fmap;
+/** Functor map for an expression layer: the fmap primitive plus the
+ * derived operations from the Functor CRTP base. */
+template <typename A, typename Allocator>
+struct ExprFFunctorMap : Functor<ExprFFunctorImpl<A, Allocator> > {
+    using ExprFFunctorImpl<A, Allocator>::fmap;
 };
 
-/** Registers ExprFFunctorMap as the Functor instance for ExprF<A>. */
-template <typename A>
-inline constexpr auto functor_typeclass<ExprF<A> > = ExprFFunctorMap<A>{};
+/** Registers ExprFFunctorMap as the Functor instance for every expression
+ * layer, over any allocator (keyed on the variant shape). */
+template <typename A, typename Allocator>
+inline constexpr auto functor_typeclass<std::variant<Const<A>, Add<A, Allocator>, Mul<A, Allocator> > > =
+    ExprFFunctorMap<A, Allocator>{};
+
+/** Allocator-carrying fmap for expression layers: identical in shape to
+ * the functor primitive, but it threads a captured allocator VALUE into
+ * the tagged make_slot it boxes with. Passing expr_fmap(alloc) to the
+ * explicit-fmap unfold_fix/refold puts every node of the built tree on
+ * @p alloc's resource — the mechanism by which the verbs are allocator-
+ * aware without an allocator parameter (Decision 9, 2026-07-18). */
+template <typename Allocator>
+struct ExprFFmapAlloc {
+    Allocator alloc;
+
+    template <typename Fn, typename A>
+    constexpr auto operator()(Fn&& fn, const typename ExprLayer<Allocator>::template F<A>& layer) const {
+        using B      = std::remove_cvref_t<std::invoke_result_t<Fn, const A&> >;
+        using LayerB = typename ExprLayer<Allocator>::template F<B>;
+        return std::visit(
+            overloaded{
+                [](const Const<A>& c) -> LayerB { return Const<B>{c.val}; },
+                [this, &fn](const Add<A, Allocator>& a) -> LayerB {
+                    return Add<B, Allocator>{make_slot<B>(std::allocator_arg, alloc, std::invoke(fn, *a.left)),
+                                             make_slot<B>(std::allocator_arg, alloc, std::invoke(fn, *a.right))};
+                },
+                [this, &fn](const Mul<A, Allocator>& m) -> LayerB {
+                    return Mul<B, Allocator>{make_slot<B>(std::allocator_arg, alloc, std::invoke(fn, *m.left)),
+                                             make_slot<B>(std::allocator_arg, alloc, std::invoke(fn, *m.right))};
+                },
+            },
+            layer);
+    }
+};
+
+/** Build an allocator-carrying fmap for expression layers over @p alloc. */
+template <typename Allocator>
+constexpr auto expr_fmap(const Allocator& alloc) -> ExprFFmapAlloc<Allocator> {
+    return ExprFFmapAlloc<Allocator>{alloc};
+}
 // a052ddcb-f05b-41c9-85bf-4c443ab438b7 end
 
 // ---------------------------------------------------------------------
@@ -165,15 +235,16 @@ inline constexpr auto eval_algebra = [](const ExprF<int>& expr) -> int {
  * alternative, so the identity goes unused.
  */
 struct ExprLayerFoldMap {
-    template <typename MapFn, typename Combine, typename Result>
-    constexpr auto operator()(const MapFn&   map_fn,
-                              const Combine& combine,
+    template <typename MapFn, typename Combine, typename Result, typename Allocator>
+    constexpr auto operator()(const MapFn&                                                                map_fn,
+                              const Combine&                                                              combine,
                               const Result& /*identity*/,
-                              const ExprF<Result>& layer) const -> Result {
+                              const std::variant<Const<Result>, Add<Result, Allocator>, Mul<Result, Allocator> >& layer)
+        const -> Result {
         return std::visit(overloaded{
                               [&](const Const<Result>& c) -> Result { return map_fn(c.val); },
-                              [&](const Add<Result>& a) -> Result { return combine(*a.left, *a.right); },
-                              [&](const Mul<Result>& m) -> Result { return combine(*m.left, *m.right); },
+                              [&](const Add<Result, Allocator>& a) -> Result { return combine(*a.left, *a.right); },
+                              [&](const Mul<Result, Allocator>& m) -> Result { return combine(*m.left, *m.right); },
                           },
                           layer);
     }
@@ -181,9 +252,10 @@ struct ExprLayerFoldMap {
 
 inline constexpr ExprLayerFoldMap expr_layer_fold_map{};
 
-/** Lookup registration for the ExprF layer fold. */
-template <typename A>
-inline constexpr auto layer_fold_typeclass<ExprF<A> > = expr_layer_fold_map;
+/** Lookup registration for the expression layer fold, over any allocator. */
+template <typename A, typename Allocator>
+inline constexpr auto layer_fold_typeclass<std::variant<Const<A>, Add<A, Allocator>, Mul<A, Allocator> > > =
+    expr_layer_fold_map;
 // 8f25579d-443a-4685-b3af-01f8103f6863 end
 
 // 66235297-8e2a-4610-b6a4-a3f2a8837fb0

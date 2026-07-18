@@ -171,6 +171,50 @@ Everything else stands: value semantics, `Box` deep-copies at the knot, copies a
 - **Decision 3 as amended**: `Box` remains the knot storage, for the recorded reasons (constexpr, nullable, aggregate-friendly).
   The inline slot is plain `std::optional`; no new vocabulary type is introduced.
 
+## Decision 9 — Allocator model: edges carry the allocator, propagated by construction
+
+Ratified by Steve on 2026-07-18 on the WP-0 spike evidence recorded in `docs/notes/allocator-adr.md`, governing the allocator-awareness campaign of `docs/notes/allocator-awareness-plan.md`.
+Everything in Decisions 1–8 and the three amendments stands unchanged; this decision finishes the container contract begun by the value-semantics and `Box` decisions (3, 6) and the storage-at-the-knot amendment (2026-07-18).
+
+`beman::tree_algorithms` is allocator-aware under the uses-allocator protocol, and the awareness is strictly additive: every existing spelling keeps its current meaning, cost, size, and constexpr capability on the default `std::allocator` path.
+
+- **No container to own an allocator; the edges carry it.**
+  `Fix<F>` is a bare recursive value, so the owning *edges* hold the allocator: `Box<A, Allocator = std::allocator<A>>` stores it via `[[no_unique_address]]`, which is zero bytes for a stateless allocator — `sizeof(Box<int>) == sizeof(int*)` is enforced by `static_assert`.
+  Allocator flow is scoped-by-construction: an allocator supplied at a construction site is threaded to children through uses-allocator construction (`std::make_obj_using_allocator`), exactly as `std::pmr` containers propagate a resource.
+  State-carrying edges honor the container rules: `select_on_container_copy_construction` on copy, allocator stolen on move, POCCA/POCMA consulted on assignment with an element-wise fallback when the traits say don't-propagate and the allocators are unequal, POCS on swap.
+
+- **Layer types stay aggregates.**
+  `BinaryTreeF`, `ExprF`, `RoseF`, and their siblings remain aggregates, and braced-init of layers is preserved throughout the codebase and the paper.
+  Allocators enter through the factory and verb surface, not through allocator-extended constructors, so `std::uses_allocator` is *not* specialized for `Fix` or the layer types.
+  The protocol members (`allocator_type`, `get_allocator`, …) appear only on the types that actually store an allocator — `Box`, and container-like types such as `BinaryTree`.
+  This is a deliberate departure from the "every class gets `allocator_type`" orthodoxy; the paper (WP-8) presents and defends it.
+
+- **Spelling: tag-first for variadic factories, trailing for fixed-arity verbs.**
+  The WP-0 spike found that a variadic default factory and a bare `allocator_arg_t`-tagged overload are ambiguous, and GCC silently resolves to the default — swallowing `allocator_arg, alloc` as ordinary constructor arguments.
+  Therefore variadic factories (`make_box`, `make_slot`, smart constructors) take the allocator `allocator_arg_t`-tag-first, and their default overloads are constrained to reject a leading `allocator_arg_t`.
+  Fixed-arity verbs (`unfold_fix`, `refold`, `to_fix`, `from_fix`) take a trailing allocator parameter; the Decision-4 verb shape is unchanged, and `fold_fix` keeps its signature while the tagged `make_slot` is made available to algebras.
+
+- **The `pmr` surface is runtime-only.**
+  A `beman::tree_algorithms::pmr` namespace supplies aliases and allocator-bound factories over `std::pmr::polymorphic_allocator`, and says plainly that it is runtime-only; the constexpr contract (Decision 7, DEV-04) is untouched on the default path.
+
+- **`shared_ptr`-spine representations use `std::allocate_shared`.**
+  `BinaryTree` and the fringe tree get allocator-extended factories built on `allocate_shared`; the control block remembers the allocator, so no per-node storage is added.
+
+### Amendment 2026-07-18 (WP-2) — Box-at-knot layers are allocator-parameterized; the verbs carry the allocator in `fmap`
+
+The WP-2 spike (`docs/notes/allocator-adr.md`, `scratchpad/wp_optionA_spike.cpp`) found that the original D-A2 formulation — layer aggregates keep using the *defaulted* `child_slot_t<A>` and allocators enter only through factories — cannot hold a *stateful* allocator: the knot `Box`'s allocator type is baked into the layer's field type as `std::allocator`, so a `pmr::polymorphic_allocator` yields a `Box` type that does not fit the field.
+Ratified resolution (Steve, 2026-07-18):
+
+- **The Box-at-knot layer alternatives are parameterized on the allocator** — `Add<A, Allocator = std::allocator<A>>`, `Mul<A, Allocator = …>`, `Succ<A, Allocator = …>`, `BinaryTreeF<T, A, Allocator = …>` — storing `child_slot_t<A, Allocator>`.
+  Childless alternatives (`Const`, `Nil`, leaves) are unchanged.
+  The allocator is bound before `Fix` by a layer binder (`ExprLayer<Allocator>::template F`, à la `RoseLayer<T>`), and the existing type aliases become the default-allocator instantiation (`Expr = Fix<ExprLayer<std::allocator<std::byte>>::template F>`), so every existing spelling keeps compiling and its type is unchanged.
+  This refines D-A2: layer types **stay aggregates** (a defaulted template parameter does not destroy aggregate-ness, and DEV-03's "name the full type" still holds), but they are no longer *non-generic* over the allocator.
+  `std::uses_allocator` is still not specialized for them.
+- **The verbs (`unfold_fix`, `refold`, `fold_fix`) get no allocator overload.**
+  This reinterprets D-A6: the allocator rides in an **allocator-carrying `fmap`** (a functor whose `operator()` threads a captured allocator value into the tagged `make_slot` it uses to build boxes), which every node allocation in an unfold flows through.
+  This is consistent with Decision 4 (explicit `fmap` is the customization point).
+  A verb-level allocator parameter remains meaningful only on the **lookup** verbs, where the verb chooses the `fmap` by looking up the functor instance.
+
 ## Discrepancies
 
 Points where a cited source does not line up exactly with the decision as recorded, noted rather than silently adjusted:

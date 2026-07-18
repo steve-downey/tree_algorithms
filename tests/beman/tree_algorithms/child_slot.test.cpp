@@ -5,9 +5,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 using beman::tree_algorithms::Box;
 using beman::tree_algorithms::child_slot_t;
@@ -46,6 +49,26 @@ static_assert(sizeof(PairFix) > 0);
 static_assert(*make_slot<int>(42) == 42);
 static_assert(!child_slot_t<int>{});
 
+// The Allocator parameter is additive: the one-argument spellings are
+// exactly what they were, and the default rebinds to the same types.
+static_assert(std::is_same_v<child_slot_t<int>, child_slot_t<int, std::allocator<int> > >);
+static_assert(std::is_same_v<child_slot_t<PairFix>, child_slot_t<PairFix, std::allocator<PairFix> > >);
+// At the knot the slot is a Box carrying the rebound allocator.
+static_assert(std::is_same_v<child_slot_t<PairFix, std::allocator<int> >, Box<PairFix, std::allocator<PairFix> > >);
+
+// The allocator-tagged make_slot inline branch is constexpr with the
+// default allocator (WP-2 / DEV-04 gate).
+constexpr auto tagged_slot_inline() -> int {
+    std::allocator<int> a;
+    auto                slot = make_slot<int>(std::allocator_arg, a, 8);
+    return *slot;
+}
+static_assert(tagged_slot_inline() == 8);
+
+// And it selects the same storage the position requires.
+static_assert(std::is_same_v<decltype(make_slot<int>(std::allocator_arg, std::allocator<int>{}, 0)),
+                             child_slot_t<int, std::allocator<int> > >);
+
 TEST_CASE("child_slot: inline slots hold values, disengage by default") {
     child_slot_t<int> absent;
     CHECK(!absent);
@@ -76,6 +99,26 @@ TEST_CASE("child_slot: knot slots are boxes with the same interface") {
     REQUIRE(node);
     CHECK(node->inner.left);
     CHECK(!node->inner.right);
+}
+
+TEST_CASE("child_slot: tagged make_slot threads the allocator into both storages") {
+    std::pmr::monotonic_buffer_resource pool;
+
+    // Knot: a Box carrying the pmr allocator, rebound to PairFix.
+    std::pmr::polymorphic_allocator<PairFix> ka(&pool);
+    auto knot = make_slot<PairFix>(std::allocator_arg, ka, PairFix{PairF<PairFix>{{}, {}}});
+    REQUIRE(knot);
+    CHECK(knot.get_allocator().resource() == &pool);
+
+    // Inline: an optional whose allocator-aware element (a pmr vector) is
+    // uses-allocator-constructed, so its inner allocations route to our
+    // resource even though the optional itself never allocates.
+    using PVec = std::pmr::vector<int>;
+    std::pmr::polymorphic_allocator<PVec> va(&pool);
+    auto inline_slot = make_slot<PVec>(std::allocator_arg, va, std::initializer_list<int>{4, 5, 6});
+    REQUIRE(inline_slot);
+    CHECK(inline_slot->size() == 3);
+    CHECK(inline_slot->get_allocator().resource() == &pool);
 }
 
 TEST_CASE("child_slot: engaged test reads identically for both storages") {

@@ -15,6 +15,7 @@ import beman.tree_algorithms;
     #include <beman/tree_algorithms/fix.hpp>
 
     #if !BEMAN_TREE_ALGORITHMS_USE_MODULES()
+        #include <memory>
         #include <optional>
         #include <type_traits>
         #include <utility>
@@ -50,31 +51,51 @@ namespace beman::tree_algorithms {
  * with *.
  * @tparam A the type in the recursive position
  */
-template <typename A>
+template <typename A, typename Allocator = std::allocator<A> >
 struct child_slot {
     using type = std::optional<A>;
 };
 
 /** The knot: inside F<Fix<F>>, Fix<F> is incomplete, so the position
- * must be an indirection. */
-template <template <typename> class F>
-struct child_slot<Fix<F> > {
-    using type = Box<Fix<F> >;
+ * must be an indirection. The knot Box carries the allocator, rebound to
+ * Fix<F>; with the default std::allocator this is exactly Box<Fix<F>> as
+ * before. */
+template <template <typename> class F, typename Allocator>
+struct child_slot<Fix<F>, Allocator> {
+    using type = Box<Fix<F>, typename std::allocator_traits<Allocator>::template rebind_alloc<Fix<F> > >;
 };
 
-template <typename A>
-using child_slot_t = typename child_slot<A>::type;
+template <typename A, typename Allocator = std::allocator<A> >
+using child_slot_t = typename child_slot<A, Allocator>::type;
 
 /** Construct an engaged child slot for @p A, forwarding @p args to A's
  * constructor: a Box for the knot, an engaged optional otherwise. A
  * default-constructed child_slot_t<A> is the disengaged (absent) child
  * either way. */
 template <typename A, typename... Args>
+    requires(!leads_with_allocator_arg<Args...>())
 constexpr auto make_slot(Args&&... args) -> child_slot_t<A> {
     if constexpr (std::is_same_v<child_slot_t<A>, Box<A> >) {
         return make_box<A>(std::forward<Args>(args)...);
     } else {
         return std::optional<A>(std::in_place, std::forward<Args>(args)...);
+    }
+}
+
+/** Allocator-extended make_slot: build the child slot for @p A so its
+ * storage and element use @p a. At the knot this is a Box carrying the
+ * rebound allocator (built by the tagged make_box); at a complete type it
+ * is an inline optional whose element is uses-allocator-constructed, so a
+ * nested allocator-aware @p A still receives @p a even though the optional
+ * itself never allocates. Spelled allocator_arg_t-tag-first, matching the
+ * factory convention (Decision 9). */
+template <typename A, typename Allocator, typename... Args>
+constexpr auto make_slot(std::allocator_arg_t, const Allocator& a, Args&&... args) -> child_slot_t<A, Allocator> {
+    using Rebound = typename std::allocator_traits<Allocator>::template rebind_alloc<A>;
+    if constexpr (std::is_same_v<child_slot_t<A, Allocator>, Box<A, Rebound> >) {
+        return make_box<A>(std::allocator_arg, a, std::forward<Args>(args)...);
+    } else {
+        return std::optional<A>(std::in_place, std::make_obj_using_allocator<A>(Rebound(a), std::forward<Args>(args)...));
     }
 }
 // 9dd7168f-4960-40f1-9366-db7d88caec2c end
