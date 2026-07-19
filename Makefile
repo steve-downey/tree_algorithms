@@ -264,6 +264,8 @@ bench: $(_build_path)/CMakeCache.txt ## Build and run the runtime microbenchmark
 	$(_bench_bin_dir)/beman.tree_algorithms.benchmarks.fold "[!benchmark]"
 	@echo "==== build: producing / copying / refolding ===="
 	$(_bench_bin_dir)/beman.tree_algorithms.benchmarks.build "[!benchmark]"
+	@echo "==== allocator: default vs monotonic vs pool, build / fold / teardown ===="
+	$(_bench_bin_dir)/beman.tree_algorithms.benchmarks.allocator "[!benchmark]"
 
 .PHONY: bench-compile
 bench-compile: $(_build_path)/CMakeCache.txt ## Recompile the compile-time benchmark matrix and report per-TU compile time
