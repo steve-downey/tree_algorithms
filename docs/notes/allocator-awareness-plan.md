@@ -1,6 +1,7 @@
 # Allocator Awareness for `beman::tree_algorithms` — Execution Plan
 
-Status: PLANNED — not yet started.
+Status: COMPLETE — all work packages (WP-0 through WP-8) landed.
+See `docs/notes/allocator/` for the per-WP handoffs and `docs/notes/allocator/DEVIATIONS.md` for the deviations ledger (DEV-A01 through DEV-A08); `docs/DECISIONS.md` Decision 9 and its WP-2 amendment carry the ratified design; `papers/algorithms-for-trees.md`'s "Allocator awareness" section carries the paper record.
 Audience: the managing agent supervising this campaign, and the sub-agents it dispatches.
 This document is the contract: work packages, dependencies, acceptance gates, and the reporting protocol.
 Deviations from this plan are permitted but must be recorded (see §7) — never silent.

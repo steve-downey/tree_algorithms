@@ -187,7 +187,7 @@ Everything in Decisions 1–8 and the three amendments stands unchanged; this de
   `BinaryTreeF`, `ExprF`, `RoseF`, and their siblings remain aggregates, and braced-init of layers is preserved throughout the codebase and the paper.
   Allocators enter through the factory and verb surface, not through allocator-extended constructors, so `std::uses_allocator` is *not* specialized for `Fix` or the layer types.
   The protocol members (`allocator_type`, `get_allocator`, …) appear only on the types that actually store an allocator — `Box`, and container-like types such as `BinaryTree`.
-  This is a deliberate departure from the "every class gets `allocator_type`" orthodoxy; the paper (WP-8) presents and defends it.
+  This is a deliberate departure from the "every class gets `allocator_type`" orthodoxy; the paper presents and defends it in its "Allocator awareness" section (`papers/algorithms-for-trees.md`, D4322R0).
 
 - **Spelling: tag-first for variadic factories, trailing for fixed-arity verbs.**
   The WP-0 spike found that a variadic default factory and a bare `allocator_arg_t`-tagged overload are ambiguous, and GCC silently resolves to the default — swallowing `allocator_arg, alloc` as ordinary constructor arguments.

@@ -63,6 +63,25 @@ Full runnable examples can be found in [`examples/`](examples/):
 * [`sequence_algorithms.cpp`](examples/sequence_algorithms.cpp) — sequence
   algorithms written against a quotient interface that never sees tree shape.
 
+## Allocators
+
+`beman.tree_algorithms` is allocator-aware under the uses-allocator protocol.
+The owning edges carry the allocator — `Box`, and the `shared_ptr` children of the persistent representations — because `Fix<F>` itself is a bare recursive value with nowhere to store one.
+The default `std::allocator` path costs nothing extra: `Box`'s allocator is `[[no_unique_address]]`, so `sizeof(Box<int>) == sizeof(int*)`, and every existing spelling keeps its current size, cost, and constexpr capability.
+A `beman::tree_algorithms::pmr` namespace supplies aliases and allocator-bound factories over `std::pmr::polymorphic_allocator`, mirroring `rose`, the smart constructors, and `to_fix`/`from_fix`, for every representation the library ships.
+
+```c++
+#include <beman/tree_algorithms/pmr.hpp>
+
+std::pmr::monotonic_buffer_resource      resource;
+beman::tree_algorithms::pmr::allocator_type alloc{&resource};
+
+auto tree = beman::tree_algorithms::pmr::const_node(alloc, 1);
+```
+
+See [`papers/algorithms-for-trees.md`](papers/algorithms-for-trees.md#allocator-awareness)
+for the allocator model and its measured costs.
+
 ## Dependencies
 
 ### Build Environment

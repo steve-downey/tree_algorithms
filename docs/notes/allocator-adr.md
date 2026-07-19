@@ -1,6 +1,7 @@
 # ADR — Allocator model for `beman::tree_algorithms`
 
-Status: PROPOSED (WP-0 output; awaiting managing-agent / Steve review before WP-1 dispatches).
+Status: RATIFIED (Steve, 2026-07-18) — folded into `docs/DECISIONS.md` Decision 9.
+The WP-2 spike found one further hazard this ADR's original spike did not anticipate (Box-at-knot layers cannot hold a stateful allocator with a defaulted `child_slot_t<A>` field); its resolution ("Option A") is recorded as Decision 9's WP-2 amendment, not here — this document is kept as the WP-0 record, not updated in place.
 Companion to `docs/notes/allocator-awareness-plan.md`; validates that plan's §3 decisions D-A1…D-A6 with a compiled spike.
 This ADR records what the spike proved, the one spelling hazard it surfaced, and the exact interface downstream work packages must build on.
 

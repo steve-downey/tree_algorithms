@@ -491,6 +491,181 @@ We also note the language-evolution horizon.
 Core-language pattern matching (P1371 "Pattern Matching"; superseded by P2688 "Pattern Matching: match Expression", still under EWG review after missing C++26) would replace the per-node dispatch inside an algebra, not the recursive traversal itself.
 The proposed facility degrades gracefully into that future: algebras get shorter under a `match` expression, and `fold_fix` continues to supply the fold that the core language will still not provide.
 
+# Allocator awareness
+
+The trees this paper's reference implementation builds own their elements, have value semantics, and allocate — they are very nearly containers, and the container contract's remaining piece is allocator awareness under the uses-allocator protocol.
+This section presents the model, defends the one place it departs from the usual convention, and reports what it costs, measured.
+
+<!--
+This section's code excerpts mirror, verbatim except for trimming to the
+relevant lines, the following anchored regions in beman.tree_algorithms
+(added across the allocator-awareness work; see
+docs/notes/allocator-awareness-plan.md and docs/DECISIONS.md Decision 9
+for the full design record this section summarizes):
+  - include/beman/tree_algorithms/box.hpp
+    Box class (allocator members): anchor a1f81cb9-ebb3-4872-9549-03ca140c61b2
+  - include/beman/tree_algorithms/expression.hpp
+    Add/Mul/ExprLayer (Box-at-knot, allocator-parameterized):
+      anchor 085bb189-a48e-4262-aefd-b64f8755e959
+    ExprFFmapAlloc/expr_fmap (allocator-carrying fmap):
+      anchor a052ddcb-f05b-41c9-85bf-4c443ab438b7
+  - include/beman/tree_algorithms/binary_tree.hpp
+    BinaryTree::node/make_ptr (allocate_shared spine):
+      anchor f6f4cee4-9c55-4add-b38b-496936319294
+  - include/beman/tree_algorithms/pmr.hpp
+    allocator_type/Box alias/make_slot: anchor d91724ee-59a9-4e14-8681-2a140cef0266
+Checked against: manually diffed against the headers above on 2026-07-18.
+Re-diff before every revision that touches these headers, since drift here
+will not be caught by the build.
+-->
+
+## Edges carry the allocator
+
+`Fix<F>` is a bare recursive value, not a container, so nothing in its own type has anywhere to keep an allocator.
+The owning edges keep it instead: `Box<A, Allocator = std::allocator<A>>` stores its allocator through `[[no_unique_address]]`, which costs nothing for the default `std::allocator` — `sizeof(Box<int>) == sizeof(int*)` is enforced by a `static_assert`.
+
+```cpp
+template <typename A, typename Allocator = std::allocator<A>>
+struct Box {
+    using allocator_type = Allocator;
+    [[no_unique_address]] Allocator alloc{};
+    A*                              ptr = nullptr;
+    // ...
+};
+```
+
+An allocator supplied at a construction site flows to children by uses-allocator construction — `std::uninitialized_construct_using_allocator` inside `Box`, `std::make_obj_using_allocator` at the inline `child_slot` position — exactly as a `std::pmr` container propagates its resource to elements that accept one.
+State-carrying edges honor the ordinary container rules: `select_on_container_copy_construction` on copy, the allocator stolen on move, POCCA/POCMA consulted on assignment with an element-wise fallback when the traits refuse propagation and the allocators compare unequal, POCS on swap.
+
+## Layer types stay aggregates — a departure defended
+
+Every operational class getting `allocator_type`, `get_allocator()`, and an allocator-extended constructor is the familiar convention; every standard container follows it.
+This library's layer types — `BinaryTreeF`, `ExprF`, `RoseF`, and their siblings — do not.
+They stay plain aggregates, and braced-init of a layer stays exactly the reading-and-writing exercise it always was, with no allocator-extended constructor to route around.
+Allocators enter a tree only at the factory and verb surface — `make_box`, `make_slot`, `rose`, the smart constructors, and the allocator-carrying `fmap` described below — never through a layer's own constructor.
+`std::uses_allocator` is, as a direct consequence, not specialized for `Fix` or for any layer type; the uses-allocator protocol members live only where an allocator is actually stored, which is `Box` and the `shared_ptr`-based representations described below.
+
+This is a deliberate departure from "every class in an allocator-aware library gets `allocator_type`," and it earns a defense rather than a shrug.
+The convention exists for container types, whose contract includes remembering how to allocate more storage after construction — a `vector` grows; an allocator-aware layer never does.
+A layer here is a value produced once, by one construction, and never mutated in place: it either has an allocator-storing edge inside it already (a `Box`, a `shared_ptr`), or it is a leaf with no recursive position and nothing to allocate at all.
+Giving every layer type its own `allocator_type` and constructor overload would change nothing about what gets allocated or how; it would only ripple an allocator-extended constructor into every aggregate literal in the codebase and this paper, in exchange for a protocol member that would always just forward to the one edge that actually stores anything.
+
+## The cost, stated plainly
+
+A stateful allocator — `std::pmr::polymorphic_allocator`, specifically — costs one pointer per `Box`, which is one pointer per heap edge.
+That is the same per-node overhead a pmr node-based standard container pays; nothing about the fixed-point representation avoids it or hides it.
+We say so here rather than let a reviewer find it.
+Because `[[no_unique_address]]` erases the default allocator entirely, the cost is opt-in: a tree built with `std::allocator` pays exactly what it paid before this work, and a tree that opts into a stateful allocator pays the pointer it would pay as a node in any other allocator-aware container.
+
+## Box-at-knot layers: the Option A refinement
+
+Not every layer can hold a stateful allocator in a defaulted `child_slot_t<A>` field, and the first version of this design ran into that wall directly.
+A layer built around a knot `Box` — the expression tree's `Add`/`Mul`, the binary tree's internal node, the natural-number successor — declares its recursive child as `child_slot_t<A>`, and with the allocator parameter defaulted, that field's type is exactly `Box<Fix<F>, std::allocator<Fix<F>>>`: the allocator is baked into the layer's field type, and it is the stateless default.
+A `pmr::polymorphic_allocator` produces a different `Box` type, and there is no construction site — not `fmap`, not `wrap_fix`, not a smart constructor — that can put a stateful allocator into a field whose type has already fixed the allocator to `std::allocator`.
+
+The resolution parameterizes the Box-at-knot layers on the allocator directly, binding it before `Fix` with a small binder type that exposes the unary-in-`A` alias template the verbs require, the same shape as the rose tree's pre-existing `RoseLayer<T>` binder:
+
+```cpp
+template <typename A, typename Allocator = expr_default_allocator>
+struct Add {
+    child_slot_t<A, Allocator> left, right;
+};
+
+template <typename Allocator>
+struct ExprLayer {
+    template <typename A>
+    using F = std::variant<Const<A>, Add<A, Allocator>, Mul<A, Allocator>>;
+};
+```
+
+The familiar aliases (`Expr`, `ExprF`) become the default-allocator instantiation of that binder, so every existing spelling keeps compiling with an unchanged type.
+A defaulted template parameter does not cost a layer its aggregate-ness, so this refines rather than reverses the aggregate decision above: `Add<int>{...}` still braced-initializes exactly as it always did, over one more template parameter than before.
+
+The verbs themselves get no allocator overload at all — `unfold_fix`, `refold`, and `fold_fix` keep the signatures shown earlier in this paper.
+A stateful allocator cannot live in a field whose type is fixed to `std::allocator`, so it cannot ride inside an ordinary `fmap` primitive either; the fix takes the same shape as the layer fix, binding the allocator before use.
+An allocator-carrying `fmap` is a small callable that captures an allocator value and threads it into the tagged `make_slot` it uses to build boxes, so every node an unfold or a refold constructs allocates through the captured allocator, with no allocator parameter on the verb itself:
+
+```cpp
+template <typename Allocator>
+struct ExprFFmapAlloc {
+    Allocator alloc;
+
+    template <typename Fn, typename A>
+    constexpr auto operator()(Fn&& fn, const typename ExprLayer<Allocator>::template F<A>& layer) const {
+        // ... visits the layer, boxing each mapped child through
+        // make_slot(std::allocator_arg, alloc, ...) instead of the
+        // default-allocator make_slot.
+    }
+};
+```
+
+This is consistent with the primary API's own rule: `fmap` is already the customization point the verbs take explicitly, and an allocator-carrying `fmap` is one more instance of it, not a new mechanism.
+A verb-level allocator parameter remains meaningful only for the lookup-tier verbs, which choose their `fmap` by looking it up rather than receiving it, and can look up the allocator-carrying instance exactly as they look up any other.
+
+## The shared_ptr spine
+
+Two representations in this library hold children through `shared_ptr` rather than `Box` — the persistent value-at-every-node binary tree and the fringe tree — and `shared_ptr` already has its own allocator story, which this library reuses rather than reinvents.
+`std::allocate_shared` combines the control block and the object into a single allocation, and the control block remembers the allocator that built it, so no per-node storage is added to either representation:
+
+```cpp
+template <typename Allocator>
+static auto node(std::allocator_arg_t, const Allocator& alloc, T value, BinaryTree left, BinaryTree right)
+    -> BinaryTree {
+    return BinaryTree(std::move(value),
+                      make_ptr(std::allocator_arg, alloc, std::move(left)),
+                      make_ptr(std::allocator_arg, alloc, std::move(right)));
+}
+
+template <typename Allocator>
+static auto make_ptr(std::allocator_arg_t, const Allocator& alloc, BinaryTree tree)
+    -> std::shared_ptr<BinaryTree> {
+    return std::allocate_shared<BinaryTree>(alloc, std::move(tree));
+}
+```
+
+A mutating operation that allocated later would need its own stored allocator, but these trees are persistent — every operation rebuilds the path it touches and shares the rest — so nothing here ever allocates after construction, and the control block is the only place an allocator needs to live.
+
+## The pmr surface
+
+A `beman::tree_algorithms::pmr` namespace collects the ergonomics for `std::pmr::polymorphic_allocator`: one allocator alias, and a thin, allocator-bound factory for every representation, each one forwarding to the tag-first factory its own representation's header already provides.
+
+```cpp
+using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
+
+template <typename A>
+using Box = beman::tree_algorithms::Box<
+    A, typename std::allocator_traits<allocator_type>::template rebind_alloc<A>>;
+```
+
+The surface is runtime-only, and its header says so directly: `std::pmr::polymorphic_allocator` dispatches every allocation through a virtual `memory_resource*`, so nothing in it is `constexpr`, and its existence changes nothing about the constexpr contract the default-allocator paths already satisfy.
+Every representation this paper's implementation experience section describes — the rose tree, the expression tree, the binary tree, and the fringe tree — has a `pmr` factory and a test proving it against a `monotonic_buffer_resource` whose upstream is `std::pmr::null_memory_resource()`, so no build, fold, or unfold of a `pmr` tree can silently fall back to the global default resource.
+
+## Measurements
+
+We measured build, fold, and teardown for the binary-tree representation against three allocator routes — default `std::allocator`, `std::pmr::monotonic_buffer_resource`, and `std::pmr::unsynchronized_pool_resource`, each stood up fresh per sample — alongside the existing hand-rolled `shared_ptr`/`unique_ptr` baselines.
+The runs were single-sample-set and machine-dependent: several rows carry a standard deviation on the order of their own mean, and a second run on a quieter machine reproduced the *direction* of every finding below but not always its *magnitude*, sometimes by a factor of two or more.
+We report both runs where the spread matters and treat every number here as directional, not as a precise, reproducible constant.
+
+The robust claim is mechanistic, not a number: a monotonic resource's `deallocate` is a no-op, so the tree's destructor still walks and destroys every value but frees nothing per node, and the whole arena drops at once, later, outside the timed region.
+Teardown over a 4,095-node tree is where that shows up most clearly, and it is also the finding most sensitive to which run you read:
+
+| route | run 1 (loaded machine) | run 2 (quieter machine) |
+|---|---|---|
+| default `std::allocator` | 224.3 μs | 47.2 μs |
+| monotonic | 28.5 μs | 17.9 μs |
+| pool | 325.1 μs | 93.8 μs |
+
+Monotonic teardown was **7.9× faster than default in run 1 and 2.6× faster in run 2** — a real and reproducible advantage in direction, but a magnitude that swings with the machine, driven mostly by volatility in the *default*-allocator row (224 μs → 47 μs) rather than in monotonic's own (28.5 μs → 17.9 μs, comparatively stable across both runs).
+We state the range, roughly 2.6×–7.9× faster, rather than headline the larger single-run figure.
+Build shows a smaller version of the same mechanism: over a 65,535-node tree, monotonic build ran roughly 2.3× faster than default (6.80 ms vs 15.59 ms, run 1), consistent with a monotonic resource turning many small allocations into a handful of geometrically-growing arena allocations; this number was not independently re-run and should be read with the same single-run caveat.
+
+The pool resource did not win, on either build or teardown, in either run: `unsynchronized_pool_resource` was slower than default in both — roughly 1.2–1.45× slower in run 1, and 1.99× slower in run 2's teardown.
+The likely explanation is methodological rather than a property of pool resources in general: every sample in this benchmark constructs a fresh, cold pool, populating empty per-size-class free lists from its upstream with no chance to amortize that cost across reuse, which is not the deployment a pool resource is designed for — building and tearing down many trees against one long-lived, already-warm pool.
+We report the number as measured rather than explain it away, because the gate for this section is honest measurement, not a favorable result; a benchmark that reuses one pool across many build/teardown cycles is the natural follow-up if the pool story is to be settled either way.
+
+The fold section is the noisiest in the run and does not cleanly show the flat line the model predicts: default, monotonic, and pool folds spread from 2.29 ms to 8.48 ms over the same tree, with every fold row's standard deviation on the same order as its mean — the signature of a measurement dominated by system noise rather than algorithmic cost, at a read that itself takes well under a millisecond at this tree size.
+Folding is expected to be resource-independent, since a fold only reads and reading never touches an allocator, and the much larger, more controlled fold benchmark elsewhere in this repository is consistent with that expectation; this section's numbers should be retaken on an idle machine before anyone treats the spread as a real effect.
+
 # Non-goals
 
 - **Standardizing one canonical tree vocabulary type.**

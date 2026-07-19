@@ -85,6 +85,19 @@ e4beac7f (fold_map lookup), 8f25579d (ExprLayerFoldMap), and
 - recursion_schemes_lookup.hpp: `layer_fmap` → L511; `fold_fix` → L523; `unfold_fix` → L604; `refold` → L660
 - papers/D4322R0 synopsis is hand-mirrored (see its HTML comment) against the verb-signature anchors above; re-diff on any signature change.
 
+## Allocator awareness (2026-07-18)
+
+New anchors added by the allocator-awareness campaign (WP-1 through WP-7); consumed 2026-07-18 by the paper's "Allocator awareness" section (prose half of WP-8).
+Anchors already listed above under "Library headers and tests" — `a1f81cb9` (Box class), `085bb189` (ExprF base functor), `a052ddcb` (functor Impl/Map), `f6f4cee4` (BinaryTree class) — grew allocator-related content in place (Allocator template parameter, `allocate_shared` factories) and now additionally serve the paper's allocator section; their "Serves" column is not repeated here.
+
+| Anchor | File | Region | Serves |
+|---|---|---|---|
+| d91724ee-59a9-4e14-8681-2a140cef0266 | include/.../pmr.hpp | allocator_type + Box alias + make_slot | paper Allocator awareness section |
+| 3c0d2dc2-2fbd-4fe2-93ae-bc3c918c292c | include/.../pmr.hpp | rose tree pmr factories | spare |
+| c8690047-802d-4423-af0e-9921f54cd6ad | include/.../pmr.hpp | expression tree pmr factories (Option A) | spare |
+| bcf74499-d261-47c6-92b4-ed628a5686eb | include/.../pmr.hpp | BinaryTree pmr factories | spare |
+| 8ff4dbe6-cad8-4d3d-b6e8-c8e46167deaf | include/.../pmr.hpp | fringe tree pmr factories | spare |
+
 ## Snippet gate
 
 `paper_snippets_check` custom target (top-level CMakeLists.txt, ALL) depends on the three anchored examples + tests.{box,fix,expression,functors,binary_tree}; negative-tested (injected syntax error fails the build).
