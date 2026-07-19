@@ -8,6 +8,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
+#include <memory>
+#include <memory_resource>
 #include <string>
 #include <utility>
 #include <variant>
@@ -16,6 +19,7 @@
 using beman::tree_algorithms::fold_map;
 using beman::tree_algorithms::fold_with;
 using beman::tree_algorithms::fringe_tree_embed;
+using beman::tree_algorithms::fringe_tree_embed_alloc;
 using beman::tree_algorithms::fringe_tree_layer_fold_map;
 using beman::tree_algorithms::fringe_tree_project;
 using beman::tree_algorithms::FringeBranch;
@@ -54,6 +58,45 @@ inline auto fringe_shape(const Tree& t) -> std::string {
     };
     return fold_with<std::string>(shape_algebra, fmap_fn, fringe_tree_project, static_cast<Ptr>(&t));
 }
+
+// ---------------------------------------------------------------------
+// A counting memory_resource, for the WP-6 pmr gate below.
+//
+// std::shared_ptr exposes no get_allocator() the way Box and
+// std::pmr::vector do, so "did this allocation land on our resource"
+// cannot be read back off the built structure the way the Box-at-knot
+// and rose-tree pmr tests do. Wrapping the pool in a resource that
+// counts every do_allocate/do_deallocate call it forwards gives the
+// same proof by a different route: an allocation count that lands
+// exactly on the expected number of allocate_shared calls (two per
+// branch node — one shared_ptr for each child) shows every spine
+// allocation reached this resource and none other, and a deallocate
+// count that catches back up once the tree is destroyed shows the
+// balance holds.
+// ---------------------------------------------------------------------
+
+class CountingResource : public std::pmr::memory_resource {
+    std::pmr::memory_resource* d_upstream;
+
+  public:
+    int allocate_count   = 0;
+    int deallocate_count = 0;
+
+    explicit CountingResource(std::pmr::memory_resource* upstream) : d_upstream(upstream) {}
+
+  private:
+    auto do_allocate(std::size_t bytes, std::size_t alignment) -> void* override {
+        ++allocate_count;
+        return d_upstream->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        ++deallocate_count;
+        d_upstream->deallocate(p, bytes, alignment);
+    }
+
+    auto do_is_equal(const std::pmr::memory_resource& other) const noexcept -> bool override { return this == &other; }
+};
 
 // ---------------------------------------------------------------------
 // Constexpr coverage (DEV-04) for the layer machinery. The tree itself
@@ -259,4 +302,96 @@ TEST_CASE("FringeTree - FoldMapConcatFollowsTheSequence", "[tree_algorithms::fri
                         fmap_fn,
                         fringe_tree_project,
                         static_cast<Ptr>(&t)) == 15);
+}
+
+// ---------------------------------------------------------------------
+// WP-6 gate: every spine allocation of a built fringe tree routes
+// through the supplied resource, both hand-assembled via the tagged
+// branch() and unfold_with-built via fringe_tree_embed_alloc. A
+// std::pmr::monotonic_buffer_resource over a null_memory_resource
+// upstream means any allocation that escaped the pool's own buffer
+// would throw, exactly as the WP-4/WP-5 pmr gates; the CountingResource
+// layered in front of it additionally proves every allocation that DID
+// happen went through this resource and none other, and that teardown
+// deallocates every one of them, closing the gap left by shared_ptr
+// exposing no get_allocator().
+// ---------------------------------------------------------------------
+
+TEST_CASE("FringeTree - PmrBranchRoutesEverySpineAllocationThroughThePool", "[tree_algorithms::fringe_tree]") {
+    using PA = std::pmr::polymorphic_allocator<std::byte>;
+
+    alignas(std::max_align_t) unsigned char buffer[16 * 1024];
+    std::pmr::monotonic_buffer_resource     pool(buffer, sizeof(buffer), std::pmr::null_memory_resource());
+    CountingResource                        counted(&pool);
+    PA                                      a(&counted);
+
+    {
+        // ((1 2) (3 4)): three branch() calls, each of which makes
+        // exactly two allocate_shared calls (one per child) — 6 total,
+        // all routed through `a` via the tagged branch overload.
+        auto t = Tree::branch(std::allocator_arg,
+                              a,
+                              Tree::branch(std::allocator_arg, a, Tree::leaf(1), Tree::leaf(2)),
+                              Tree::branch(std::allocator_arg, a, Tree::leaf(3), Tree::leaf(4)));
+
+        CHECK(counted.allocate_count == 6);
+        CHECK(t.flatten() == std::vector<int>{1, 2, 3, 4});
+        CHECK(t.measure() == 4U);
+
+        // DEV-01: parenthesization pins both shape and element order.
+        CHECK(fringe_shape(t) == "((1 2) (3 4))");
+    }
+
+    // The tree above just went out of scope: every allocate_shared call
+    // is matched by a deallocate through the same resource — no leak,
+    // and (because the pool sits on a null_memory_resource upstream) no
+    // allocation could have escaped to the default resource during the
+    // build above without throwing.
+    CHECK(counted.deallocate_count == counted.allocate_count);
+}
+
+TEST_CASE("FringeTree - PmrUnfoldBuildsEntirelyFromThePool", "[tree_algorithms::fringe_tree]") {
+    using PA = std::pmr::polymorphic_allocator<std::byte>;
+
+    alignas(std::max_align_t) unsigned char buffer[16 * 1024];
+    std::pmr::monotonic_buffer_resource     pool(buffer, sizeof(buffer), std::pmr::null_memory_resource());
+    CountingResource                        counted(&pool);
+    PA                                      a(&counted);
+
+    using Range          = std::pair<int, int>;
+    auto split_coalgebra = [](const Range& r) -> FringeTreeF<int, Range> {
+        auto [lo, hi] = r;
+        if (hi - lo <= 0) {
+            return FringeEmpty{};
+        }
+        if (hi - lo == 1) {
+            return FringeLeaf<int>{lo};
+        }
+        int mid = lo + (hi - lo) / 2;
+        return FringeBranch<Range>{Range{lo, mid}, Range{mid, hi}};
+    };
+    const auto& fmap_fn = [](auto&& fn, const auto& layer) {
+        using Layer = std::remove_cvref_t<decltype(layer)>;
+        return functor_typeclass<Layer>.fmap(std::forward<decltype(fn)>(fn), layer);
+    };
+
+    {
+        // [0, 8) splits into a full binary tree of 8 leaves and 7
+        // branch nodes; every branch node makes two allocate_shared
+        // calls, so 14 total, all routed through fringe_tree_embed_alloc(a)
+        // rather than fringe_tree_embed — no verb-level allocator
+        // overload, matching the expression/rose tree precedent
+        // (Decision 9, 2026-07-18 amendment).
+        auto tree = unfold_with<Tree>(split_coalgebra, fmap_fn, fringe_tree_embed_alloc(a), Range{0, 8});
+
+        CHECK(counted.allocate_count == 14);
+        CHECK(tree.flatten() == std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7});
+        CHECK(tree.measure() == 8U);
+
+        // DEV-01: the same shape/order probe as the default-allocator
+        // unfold_with test above, now built entirely on the pool.
+        CHECK(fringe_shape(tree) == "(((0 1) (2 3)) ((4 5) (6 7)))");
+    }
+
+    CHECK(counted.deallocate_count == counted.allocate_count);
 }

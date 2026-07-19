@@ -19,6 +19,7 @@ if(BEMAN_TREE_ALGORITHMS_USE_MODULES)
                     functor.hpp
                     functors.hpp
                     overloaded.hpp
+                    pmr.hpp
                     recursion_schemes.hpp
                     recursion_schemes_lookup.hpp
                     rose_tree.hpp
@@ -44,6 +45,7 @@ else()
                     functor.hpp
                     functors.hpp
                     overloaded.hpp
+                    pmr.hpp
                     recursion_schemes.hpp
                     recursion_schemes_lookup.hpp
                     rose_tree.hpp

@@ -48,6 +48,28 @@ namespace beman::tree_algorithms {
 // The cached measure is the bridge to measured-sequence designs: the
 // embedding below routes through branch(), which computes the measure,
 // so trees built by unfold_with maintain the invariant by construction.
+//
+// Allocator awareness (Decision 9, D-A5): this is a shared_ptr-spine
+// representation like BinaryTree, so the treatment is allocate_shared
+// factories, not the Box-at-knot / allocator-carrying-fmap machinery
+// the Fix-based layers need. branch() gains an allocator_arg_t-tagged
+// overload routing both spine shared_ptr allocations through the
+// supplied resource; leaf() and empty() do not, because neither one
+// allocates a spine node in the first place (a leaf's value lives
+// directly in the variant, and empty carries no state at all) — a
+// tagged overload of either would take an allocator and discard it,
+// which is worse than not offering one. concat/cons/snoc/from_sequence
+// stay untagged too: they are compositions of branch/leaf/empty for the
+// default-allocator ergonomic path, and building an entire tree onto a
+// resource already has two routes that need no further surface — nest
+// the tagged branch() calls directly, or unfold_with an entire tree
+// through fringe_tree_embed_alloc(alloc) below, the allocator-carrying
+// counterpart of fringe_tree_embed. The embed needs this counterpart
+// for the same reason rose_fmap/expr_fmap exist (Decision 9, 2026-07-18
+// amendment): a coalgebra's returned layer has no real spine allocation
+// to propagate, so only a captured allocator value can route a build.
+// fold_with/the layer fold need no analogous counterpart: folding a
+// fringe tree never allocates a spine node, only branch (build) does.
 
 // ---------------------------------------------------------------------
 // The existing tree, ported as-is.
@@ -90,6 +112,23 @@ class FringeTree {
         auto left_ptr  = std::make_shared<FringeTree>(std::move(left));
         auto right_ptr = std::make_shared<FringeTree>(std::move(right));
         auto measure   = left_ptr->measure() + right_ptr->measure();
+        return FringeTree(Branch{measure, std::move(left_ptr), std::move(right_ptr)});
+    }
+
+    /** Allocator-extended branch: joins two subtrees exactly as branch()
+     * does, but routes both spine shared_ptr allocations through @p a
+     * (rebound to FringeTree) via std::allocate_shared, so a tree built
+     * entirely through this overload never touches the default resource.
+     * The measure is computed here, same as branch(), correct by
+     * construction regardless of which allocator built the spine.
+     * allocator_arg_t-tag-first, per Decision 9's factory spelling. */
+    template <typename Allocator>
+    static auto branch(std::allocator_arg_t, const Allocator& a, FringeTree left, FringeTree right) -> FringeTree {
+        using Rebound = typename std::allocator_traits<Allocator>::template rebind_alloc<FringeTree>;
+        Rebound rebound(a);
+        auto    left_ptr  = std::allocate_shared<FringeTree>(rebound, std::move(left));
+        auto    right_ptr = std::allocate_shared<FringeTree>(rebound, std::move(right));
+        auto    measure   = left_ptr->measure() + right_ptr->measure();
         return FringeTree(Branch{measure, std::move(left_ptr), std::move(right_ptr)});
     }
 
@@ -344,6 +383,45 @@ struct FringeTreeEmbedFn {
 };
 
 inline constexpr FringeTreeEmbedFn fringe_tree_embed{};
+
+/** Allocator-carrying embedding for unfold_with: identical in role to
+ * fringe_tree_embed, but routes every branch node's spine allocation
+ * through the captured @p alloc VALUE, via FringeTree::branch's
+ * allocator-tagged overload. This representation's fmap never allocates
+ * (a branch's children are recursion handles held by value, not an
+ * owning container with its own allocator to propagate — unlike the
+ * rose tree's children vector), so there is no "source" allocator for a
+ * build-from-seed layer to inherit; only a captured allocator value can
+ * route an unfold_with-built tree's shared_ptr spine onto a resource.
+ * This is the same asymmetry WP-4 records for rose_fmap and WP-5 for
+ * expr_fmap (Decision 9, 2026-07-18 amendment): fold/project never
+ * needed an allocator-carrying counterpart here either, since folding a
+ * fringe tree never allocates a spine node in the first place. */
+template <typename Allocator>
+struct FringeTreeEmbedAllocFn {
+    Allocator alloc;
+
+    template <typename T>
+    auto operator()(FringeTreeF<T, FringeTree<T> >&& layer) const -> FringeTree<T> {
+        return std::visit(overloaded{
+                              [](FringeEmpty&&) { return FringeTree<T>::empty(); },
+                              [](FringeLeaf<T>&& l) { return FringeTree<T>::leaf(std::move(l.value)); },
+                              [this](FringeBranch<FringeTree<T> >&& b) {
+                                  return FringeTree<T>::branch(
+                                      std::allocator_arg, alloc, std::move(b.left), std::move(b.right));
+                              },
+                          },
+                          std::move(layer));
+    }
+};
+
+/** Build an allocator-carrying embedding for fringe-tree layers over
+ * @p alloc; pass to unfold_with in place of fringe_tree_embed to build
+ * an entire tree's shared_ptr spine on @p alloc's resource. */
+template <typename Allocator>
+auto fringe_tree_embed_alloc(const Allocator& alloc) -> FringeTreeEmbedAllocFn<Allocator> {
+    return FringeTreeEmbedAllocFn<Allocator>{alloc};
+}
 // 321edf34-488f-4322-ac5c-320fa5c4d1fc end
 
 // ---------------------------------------------------------------------

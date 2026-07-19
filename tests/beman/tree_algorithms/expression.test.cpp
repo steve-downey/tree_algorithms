@@ -10,6 +10,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <functional>
+#include <memory>
+#include <memory_resource>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -192,6 +194,55 @@ TEST_CASE("Expression - UnfoldBuildsTheExpectedShape", "[tree_algorithms::expres
     auto  via_explicit = unfold_fix<ExprF>(split_coalgebra, fmap_expr_fn, seed);
     CHECK(fold_fix<std::string>(print_algebra, via_lookup) == "((0 + 1) + (2 + (3 + 4)))");
     CHECK(fold_fix<std::string>(print_algebra, via_explicit) == "((0 + 1) + (2 + (3 + 4)))");
+}
+
+TEST_CASE("Expression - PmrUnfoldBuildsEntirelyFromThePool", "[tree_algorithms::expression]") {
+    // Option A propagation proof: a pmr expression tree unfolds every node
+    // from a monotonic pool whose upstream is null_memory_resource — any
+    // allocation escaping the buffer would throw. The allocator rides in
+    // expr_fmap(alloc), not in a verb parameter.
+    using beman::tree_algorithms::expr_fmap;
+    using beman::tree_algorithms::ExprLayer;
+    using beman::tree_algorithms::Fix;
+    using beman::tree_algorithms::unwrap_fix;
+    using PA      = std::pmr::polymorphic_allocator<std::byte>;
+    using PmrFix  = Fix<ExprLayer<PA>::template F>;
+
+    // pmr-typed range coalgebra: same split shape, pmr layer type.
+    auto pmr_split = [](const Range& r) -> ExprLayer<PA>::F<Range> {
+        auto [lo, hi] = r;
+        if (hi - lo <= 1)
+            return Const<Range>{lo};
+        int mid = lo + (hi - lo) / 2;
+        return Add<Range, PA>{make_slot<Range>(Range{lo, mid}), make_slot<Range>(Range{mid, hi})};
+    };
+
+    alignas(std::max_align_t) unsigned char buffer[16 * 1024];
+    std::pmr::monotonic_buffer_resource pool(buffer, sizeof(buffer), std::pmr::null_memory_resource());
+    PA                                  a(&pool);
+
+    // Build over the pool via the EXISTING unfold_fix + an allocator-carrying fmap.
+    auto tree = unfold_fix<ExprLayer<PA>::template F>(pmr_split, expr_fmap(a), Range{0, 8});
+
+    // Every knot Box carries our resource — check the root's children.
+    const auto& root = unwrap_fix(tree);
+    REQUIRE(std::holds_alternative<Add<PmrFix, PA>>(root));
+    const auto& add = std::get<Add<PmrFix, PA>>(root);
+    CHECK(add.left.get_allocator().resource() == &pool);
+    CHECK(add.right.get_allocator().resource() == &pool);
+
+    // Fold the pmr tree back (inline int layers, no boxes) via lookup: the
+    // constants 0..7 sum to 28. That the build completed at all proves no
+    // allocation escaped to the null upstream.
+    auto pmr_sum = [](const ExprLayer<PA>::F<int>& layer) -> int {
+        return std::visit(overloaded{
+                              [](const Const<int>& c) { return c.val; },
+                              [](const Add<int, PA>& x) { return *x.left + *x.right; },
+                              [](const Mul<int, PA>& x) { return *x.left * *x.right; },
+                          },
+                          layer);
+    };
+    CHECK(fold_fix<int>(pmr_sum, tree) == 28);
 }
 
 TEST_CASE("Expression - RefoldMatchesFoldOfUnfold", "[tree_algorithms::expression]") {

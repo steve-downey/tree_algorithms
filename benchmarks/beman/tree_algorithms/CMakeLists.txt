@@ -16,7 +16,7 @@
 
 find_package(Catch2 3 REQUIRED)
 
-set(_runtime_benches fold build)
+set(_runtime_benches fold build allocator)
 
 foreach(_bench IN LISTS _runtime_benches)
     add_executable(beman.tree_algorithms.benchmarks.${_bench})
@@ -41,6 +41,7 @@ add_dependencies(
     bench_runtime_all
     beman.tree_algorithms.benchmarks.fold
     beman.tree_algorithms.benchmarks.build
+    beman.tree_algorithms.benchmarks.allocator
 )
 
 # ---------------------------------------------------------------------

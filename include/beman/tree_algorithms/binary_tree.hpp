@@ -23,6 +23,7 @@ import beman.tree_algorithms;
     #include <cassert>
 
     #if !BEMAN_TREE_ALGORITHMS_USE_MODULES()
+        #include <cstddef>
         #include <functional>
         #include <memory>
         #include <type_traits>
@@ -89,7 +90,11 @@ class BinaryTree {
     }
 
     /** Low-level constructor accepting pre-built child shared_ptrs.
-     * Null pointers represent absent children.
+     * Null pointers represent absent children. No allocator-tagged
+     * overload: the children are already-built shared_ptrs, so whatever
+     * allocator produced them (e.g. the tagged make_ptr below) already
+     * did the only allocation this constructor could route; there is
+     * nothing left for a tag to change here.
      */
     static auto from_children_ptrs(T value, std::shared_ptr<BinaryTree> left, std::shared_ptr<BinaryTree> right)
         -> BinaryTree {
@@ -99,6 +104,42 @@ class BinaryTree {
     /** Heap-allocate a copy of @p tree and return the owning pointer. */
     static auto make_ptr(BinaryTree tree) -> std::shared_ptr<BinaryTree> {
         return std::make_shared<BinaryTree>(std::move(tree));
+    }
+
+    /** Allocator-extended leaf factory: uniform tag-first spelling with
+     * node() (Decision 9), so generic code can build a leaf or an
+     * internal node the same way. A leaf allocates nothing — it has no
+     * children to wrap in a shared_ptr — so @p alloc is accepted and
+     * unused; there is no allocator to store (D-A5: the shared_ptr
+     * control block is the only place an allocator lives in this
+     * representation, and a leaf has no control block of its own here
+     * either). */
+    template <typename Allocator>
+    static auto leaf(std::allocator_arg_t, const Allocator&, T value) -> BinaryTree {
+        return BinaryTree(std::move(value), nullptr, nullptr);
+    }
+
+    /** Allocator-extended internal-node factory: builds via
+     * allocate_shared (through the tagged make_ptr below), so both
+     * children's control blocks — and the BinaryTree objects they own —
+     * come from @p alloc's resource. Tag-first, per Decision 9. */
+    template <typename Allocator>
+    static auto node(std::allocator_arg_t, const Allocator& alloc, T value, BinaryTree left, BinaryTree right)
+        -> BinaryTree {
+        return BinaryTree(std::move(value),
+                          make_ptr(std::allocator_arg, alloc, std::move(left)),
+                          make_ptr(std::allocator_arg, alloc, std::move(right)));
+    }
+
+    /** Allocator-extended heap-allocate: builds the owning shared_ptr via
+     * allocate_shared, so the combined control-block-and-object
+     * allocation comes from @p alloc's resource. The shared_ptr control
+     * block remembers the allocator (D-A5), so BinaryTree itself stores
+     * none — no stored allocator member is added to this class. */
+    template <typename Allocator>
+    static auto make_ptr(std::allocator_arg_t, const Allocator& alloc, BinaryTree tree)
+        -> std::shared_ptr<BinaryTree> {
+        return std::allocate_shared<BinaryTree>(alloc, std::move(tree));
     }
 
     /** Return the value stored at this node. */
@@ -137,31 +178,45 @@ class BinaryTree {
 // ---------------------------------------------------------------------
 
 // 27aeff53-a371-43b6-9037-135d5d008c26
+/** The allocator a BinaryTreeF layer's Box-at-knot children default to. A
+ * fixed (value-type-independent) spelling, mirroring
+ * expr_default_allocator / rose_default_allocator: child_slot rebinds it
+ * to Fix at the knot, so this is Box<Fix, std::allocator<Fix>> exactly as
+ * before (Decision 9, 2026-07-18 WP-2 amendment). */
+using binary_tree_default_allocator = std::allocator<std::byte>;
+
 /** One layer of a value-at-every-node binary tree: a value plus nullable
  * children in child slots. A disengaged slot mirrors an absent child,
  * exactly as a null shared_ptr does in BinaryTree. The slot is a Box
  * exactly when A is the fixed point (the knot, where A is incomplete)
  * and inline std::optional storage at every complete type — so the
- * F<Result> layers a fold materializes allocate nothing.
+ * F<Result> layers a fold materializes allocate nothing. Parameterized
+ * on the allocator so a stateful (pmr) allocator can live in the knot
+ * Box (Decision 9); the default is the stateless std::allocator,
+ * unchanged.
  * @tparam T element type stored at every node
  * @tparam A recursive position placeholder (not yet fixed)
+ * @tparam Allocator allocator carried at the knot
  */
-template <typename T, typename A>
+template <typename T, typename A, typename Allocator = binary_tree_default_allocator>
 struct BinaryTreeF {
-    T               value;
-    child_slot_t<A> left;
-    child_slot_t<A> right;
+    T                          value;
+    child_slot_t<A, Allocator> left;
+    child_slot_t<A, Allocator> right;
 };
 
-/** Binds the element type of BinaryTreeF, leaving the unary-in-A alias
- * template @c F that Fix and the verbs require. */
-template <typename T>
+/** Binds the allocator of a BinaryTreeF layer, leaving the unary-in-A
+ * alias template @c F that Fix and the verbs require (à la RoseLayer<T>,
+ * ExprLayer<Allocator>). */
+template <typename T, typename Allocator = binary_tree_default_allocator>
 struct BinaryTreeLayer {
     template <typename A>
-    using F = BinaryTreeF<T, A>;
+    using F = BinaryTreeF<T, A, Allocator>;
 };
 
-/** The Fix form of a value-at-every-node binary tree over @p T. */
+/** The Fix form of a value-at-every-node binary tree over @p T, over the
+ * default (stateless) allocator. A pmr binary tree is
+ * Fix<BinaryTreeLayer<T, pmr-allocator>::template F>. */
 template <typename T>
 using BinaryTreeFix = Fix<BinaryTreeLayer<T>::template F>;
 // 27aeff53-a371-43b6-9037-135d5d008c26 end
@@ -171,35 +226,42 @@ using BinaryTreeFix = Fix<BinaryTreeLayer<T>::template F>;
 // ---------------------------------------------------------------------
 
 // 91fef612-39b5-4424-8ab5-7d8c80997e2c
-/** Functor primitive for BinaryTreeF<T, A>: applies @p fn to each engaged
- * child, left before right; absent (disengaged) children stay absent. The
- * node value copies across untouched. make_slot picks the result layer's
- * storage: inline for complete B, boxed only if B is itself the knot.
+/** Functor primitive for a BinaryTreeF layer over @p Allocator: applies
+ * @p fn to each engaged child, left before right; absent (disengaged)
+ * children stay absent. The node value copies across untouched. This
+ * primitive boxes with the default allocator, which is correct for the
+ * default (stateless) tree and for every fold (fold layers store
+ * children inline at a complete Result type, so the allocator type
+ * never reaches a Box). This WP's allocator-aware build path is to_fix,
+ * not unfold_fix, so — unlike ExprF/RoseF — no allocator-carrying fmap
+ * is needed here; the restriction is recorded for symmetry with those
+ * representations' handoffs.
  */
-template <typename T, typename A>
+template <typename T, typename A, typename Allocator>
 struct BinaryTreeFFunctorImpl {
     template <typename Fn>
-    constexpr auto fmap(this auto&&, Fn&& fn, const BinaryTreeF<T, A>& layer) {
+    constexpr auto fmap(this auto&&, Fn&& fn, const BinaryTreeF<T, A, Allocator>& layer) {
         using B = std::remove_cvref_t<std::invoke_result_t<Fn, const A&> >;
-        return BinaryTreeF<T, B>{
+        return BinaryTreeF<T, B, Allocator>{
             layer.value,
-            layer.left ? make_slot<B>(std::invoke(fn, *layer.left)) : child_slot_t<B>{},
-            layer.right ? make_slot<B>(std::invoke(fn, *layer.right)) : child_slot_t<B>{},
+            layer.left ? make_slot<B>(std::invoke(fn, *layer.left)) : child_slot_t<B, Allocator>{},
+            layer.right ? make_slot<B>(std::invoke(fn, *layer.right)) : child_slot_t<B, Allocator>{},
         };
     }
 };
 
-/** Functor map for BinaryTreeF<T, A>: the fmap primitive plus the derived
- * operations from the Functor CRTP base. */
-template <typename T, typename A>
-struct BinaryTreeFFunctorMap : Functor<BinaryTreeFFunctorImpl<T, A> > {
-    using BinaryTreeFFunctorImpl<T, A>::fmap;
+/** Functor map for a BinaryTreeF layer: the fmap primitive plus the
+ * derived operations from the Functor CRTP base. */
+template <typename T, typename A, typename Allocator>
+struct BinaryTreeFFunctorMap : Functor<BinaryTreeFFunctorImpl<T, A, Allocator> > {
+    using BinaryTreeFFunctorImpl<T, A, Allocator>::fmap;
 };
 
-/** Registers BinaryTreeFFunctorMap as the Functor instance for
- * BinaryTreeF<T, A>. */
-template <typename T, typename A>
-inline constexpr auto functor_typeclass<BinaryTreeF<T, A> > = BinaryTreeFFunctorMap<T, A>{};
+/** Registers BinaryTreeFFunctorMap as the Functor instance for every
+ * BinaryTreeF layer, over any allocator (Allocator deduced — covers the
+ * default and any pmr instantiation with one registration). */
+template <typename T, typename A, typename Allocator>
+inline constexpr auto functor_typeclass<BinaryTreeF<T, A, Allocator> > = BinaryTreeFFunctorMap<T, A, Allocator>{};
 // 91fef612-39b5-4424-8ab5-7d8c80997e2c end
 
 // ---------------------------------------------------------------------
@@ -214,11 +276,11 @@ inline constexpr auto functor_typeclass<BinaryTreeF<T, A> > = BinaryTreeFFunctor
  * observes it.
  */
 struct BinaryTreeLayerFoldMap {
-    template <typename MapFn, typename Combine, typename Result, typename T>
-    constexpr auto operator()(const MapFn&                  map_fn,
-                              const Combine&                combine,
-                              const Result&                 identity,
-                              const BinaryTreeF<T, Result>& layer) const -> Result {
+    template <typename MapFn, typename Combine, typename Result, typename T, typename Allocator>
+    constexpr auto operator()(const MapFn&                             map_fn,
+                              const Combine&                           combine,
+                              const Result&                            identity,
+                              const BinaryTreeF<T, Result, Allocator>& layer) const -> Result {
         Result left  = layer.left ? *layer.left : identity;
         Result right = layer.right ? *layer.right : identity;
         return combine(combine(left, map_fn(layer.value)), right);
@@ -255,8 +317,8 @@ inline constexpr BinaryTreeProjectFn binary_tree_project{};
 template <typename T>
 inline constexpr auto project_typeclass<BinaryTree<T> > = binary_tree_project;
 
-template <typename T, typename A>
-inline constexpr auto layer_fold_typeclass<BinaryTreeF<T, A> > = binary_tree_layer_fold_map;
+template <typename T, typename A, typename Allocator>
+inline constexpr auto layer_fold_typeclass<BinaryTreeF<T, A, Allocator> > = binary_tree_layer_fold_map;
 // c9e514d9-4cf1-4fa1-ac4d-a9dfdf040291 end
 
 // ---------------------------------------------------------------------
@@ -275,6 +337,27 @@ auto to_fix(const BinaryTree<T>& tree) -> BinaryTreeFix<T> {
                               tree.has_right() ? make_slot<Fixed>(to_fix(tree.right())) : child_slot_t<Fixed>{}});
 }
 
+/** Allocator-extended to_fix: converts a BinaryTree<T> to its Fix form
+ * over @p Allocator, threading @p alloc into the tagged make_slot
+ * (child_slot.hpp) at every knot Box (Decision 9) — the allocator is
+ * for the Fix side, one knot Box per engaged child position, all built
+ * on @p alloc's resource. Deep copy, same as the default-allocator
+ * overload; recurses through this same overload so every level, not
+ * just the root, is threaded. Tag-first, per Decision 9. */
+template <typename T, typename Allocator>
+auto to_fix(std::allocator_arg_t, const Allocator& alloc, const BinaryTree<T>& tree)
+    -> Fix<BinaryTreeLayer<T, Allocator>::template F> {
+    using Fixed = Fix<BinaryTreeLayer<T, Allocator>::template F>;
+    return wrap_fix<BinaryTreeLayer<T, Allocator>::template F>(BinaryTreeF<T, Fixed, Allocator>{
+        tree.value(),
+        tree.has_left()
+            ? make_slot<Fixed>(std::allocator_arg, alloc, to_fix(std::allocator_arg, alloc, tree.left()))
+            : child_slot_t<Fixed, Allocator>{},
+        tree.has_right()
+            ? make_slot<Fixed>(std::allocator_arg, alloc, to_fix(std::allocator_arg, alloc, tree.right()))
+            : child_slot_t<Fixed, Allocator>{}});
+}
+
 /** Extracts the element type from a BinaryTreeF layer type; T is a
  * non-deduced context inside BinaryTreeFix<T> (it sits behind a nested
  * alias template), so from_fix deduces the base functor and recovers the
@@ -282,8 +365,8 @@ auto to_fix(const BinaryTree<T>& tree) -> BinaryTreeFix<T> {
 template <typename Layer>
 struct binary_tree_element;
 
-template <typename T, typename A>
-struct binary_tree_element<BinaryTreeF<T, A> > {
+template <typename T, typename A, typename Allocator>
+struct binary_tree_element<BinaryTreeF<T, A, Allocator> > {
     using type = T;
 };
 
@@ -292,10 +375,33 @@ struct binary_tree_element<BinaryTreeF<T, A> > {
 template <template <typename> class F>
 auto from_fix(const Fix<F>& fixed) -> BinaryTree<typename binary_tree_element<F<Fix<F> > >::type> {
     using T              = typename binary_tree_element<F<Fix<F> > >::type;
-    auto rebuild_algebra = [](const BinaryTreeF<T, BinaryTree<T> >& layer) -> BinaryTree<T> {
+    auto rebuild_algebra = [](const F<BinaryTree<T> >& layer) -> BinaryTree<T> {
         return BinaryTree<T>::from_children_ptrs(layer.value,
                                                  layer.left ? BinaryTree<T>::make_ptr(*layer.left) : nullptr,
                                                  layer.right ? BinaryTree<T>::make_ptr(*layer.right) : nullptr);
+    };
+    return fold_fix<BinaryTree<T> >(rebuild_algebra, fixed);
+}
+
+/** Allocator-extended from_fix: rebuilds a BinaryTree<T> from its Fix
+ * form, threading @p alloc into allocate_shared (via the tagged
+ * make_ptr) for every reconstructed shared_ptr child (Decision 9) — the
+ * allocator is for the rebuilt shared_ptr side. fold_fix itself needs
+ * no allocator overload (D-A2 / Decision 9): the intermediate
+ * F<BinaryTree<T>> layers it hands the algebra store children inline
+ * (BinaryTree<T> is a complete type, not Fix), so no Box is ever built
+ * during the fold — only the algebra's own allocate_shared calls
+ * allocate, and those are threaded explicitly here. Tag-first, per
+ * Decision 9. */
+template <template <typename> class F, typename Allocator>
+auto from_fix(std::allocator_arg_t, const Allocator& alloc, const Fix<F>& fixed)
+    -> BinaryTree<typename binary_tree_element<F<Fix<F> > >::type> {
+    using T              = typename binary_tree_element<F<Fix<F> > >::type;
+    auto rebuild_algebra = [&alloc](const F<BinaryTree<T> >& layer) -> BinaryTree<T> {
+        return BinaryTree<T>::from_children_ptrs(
+            layer.value,
+            layer.left ? BinaryTree<T>::make_ptr(std::allocator_arg, alloc, *layer.left) : nullptr,
+            layer.right ? BinaryTree<T>::make_ptr(std::allocator_arg, alloc, *layer.right) : nullptr);
     };
     return fold_fix<BinaryTree<T> >(rebuild_algebra, fixed);
 }
